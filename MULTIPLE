@@ -1,0 +1,423 @@
+\`\`\`typescript
+// app/api/challenges/route.ts
+import { NextResponse } from "next/server"
+import type { NextRequest } from "next/server"
+import { createServerSupabase } from "@/lib/supabase/server"
+import { getPublicChallengeList, getPublicChallengeById, getHintById } from "@/lib/ctf-data"
+
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url)
+  const id = searchParams.get("id")
+  const hintId = searchParams.get("hint")
+
+  try {
+    const supabase = createServerSupabase()
+    if (id) {
+      const { data, error } = await supabase
+        .from("challenges")
+        .select("id,name,category,points,difficulty,description,daily,files")
+        .eq("id", id)
+        .single()
+      if (error || !data) throw error
+      return NextResponse.json({ challenge: data })
+    }
+
+    if (hintId) {
+      const { data, error } = await supabase.from("challenges").select("hint").eq("id", hintId).single()
+      if (error || !data) throw error
+      return NextResponse.json({ hint: data.hint })
+    }
+
+    const { data, error } = await supabase
+      .from("challenges")
+      .select("id,name,category,points,difficulty,daily")
+      .order("points", { ascending: true })
+    if (error) throw error
+    return NextResponse.json({ challenges: data ?? [] })
+  } catch {
+    // Fallback to sample data
+    if (id) {
+      const c = getPublicChallengeById(id)
+      if (!c) return new NextResponse("Not found", { status: 404 })
+      return NextResponse.json({ challenge: c })
+    }
+    if (hintId) {
+      const hint = getHintById(hintId)
+      if (!hint) return new NextResponse("Not found", { status: 404 })
+      return NextResponse.json({ hint })
+    }
+    return NextResponse.json({ challenges: getPublicChallengeList() })
+  }
+}
+\`\`\`
+
+\`\`\`typescript
+// app/api/fs/route.ts
+import { NextResponse } from "next/server"
+import type { NextRequest } from "next/server"
+import { createServerSupabase } from "@/lib/supabase/server"
+import { rulesText as fallbackRules, getPublicChallengeList } from "@/lib/ctf-data"
+
+type FsNode = {
+  name: string
+  path: string
+  type: "dir" | "file"
+  children?: FsNode[]
+  content?: string
+  mime?: string
+  sourceUrl?: string
+}
+
+function baseFS(): FsNode {
+  const root: FsNode = { name: "/", path: "/", type: "dir", children: [] }
+  root.children!.push({
+    name: "rules.txt",
+    path: "/rules.txt",
+    type: "file",
+    sourceUrl: "/api/rules",
+    mime: "text/plain",
+    content: fallbackRules,
+  })
+  root.children!.push({
+    name: "leaderboard.json",
+    path: "/leaderboard.json",
+    type: "file",
+    sourceUrl: "/api/leaderboard",
+    mime: "application/json",
+  })
+  root.children!.push({
+    name: "teams.json",
+    path: "/teams.json",
+    type: "file",
+    sourceUrl: "/api/teams",
+    mime: "application/json",
+  })
+  return root
+}
+
+export async function GET(_req: NextRequest) {
+  const root = baseFS()
+
+  let challenges: Array<{ id: string; name: string; category: string; points: number; difficulty: string; daily?: boolean }> = []
+  try {
+    const supabase = createServerSupabase()
+    const { data, error } = await supabase
+      .from("challenges")
+      .select("id,name,category,points,difficulty,daily")
+      .order("category", { ascending: true })
+      .order("points", { ascending: true })
+    if (error) throw error
+    challenges = data ?? []
+  } catch {
+    challenges = getPublicChallengeList()
+  }
+
+  // Challenges folder
+  const challengesDir: FsNode = { name: "challenges", path: "/challenges", type: "dir", children: [] }
+  const byCategory = new Map<string, typeof challenges>()
+  for (const c of challenges) {
+    const arr = byCategory.get(c.category) ?? []
+    arr.push(c)
+    byCategory.set(c.category, arr)
+  }
+  for (const [category, items] of byCategory.entries()) {
+    const catDir: FsNode = { name: category, path: `/challenges/${category}`, type: "dir", children: [] }
+    for (const c of items) {
+      const chDir: FsNode = {
+        name: c.id,
+        path: `/challenges/${category}/${c.id}`,
+        type: "dir",
+        children: [],
+      }
+      chDir.children!.push({
+        name: "README.md",
+        path: `${chDir.path}/README.md`,
+        type: "file",
+        mime: "text/markdown",
+        content: [
+          `# ${c.name}`,
+          ``,
+          `ID: ${c.id}`,
+          `Category: ${c.category}`,
+          `Points: ${c.points}`,
+          `Difficulty: ${c.difficulty}`,
+          `Daily: ${c.daily ? "yes" : "no"}`,
+          ``,
+          `Use 'challenge ${c.id}' to view full details and files.`,
+          `Use 'hint ${c.id}' to reveal a hint.`,
+          `Submit with: submit ${c.id} editaCTF{your_flag_here}`,
+        ].join("\n"),
+      })
+      chDir.children!.push({
+        name: "challenge.txt",
+        path: `${chDir.path}/challenge.txt`,
+        type: "file",
+        sourceUrl: `/api/challenges?id=${encodeURIComponent(c.id)}`,
+        mime: "application/json",
+      })
+      chDir.children!.push({
+        name: "hints.txt",
+        path: `${chDir.path}/hints.txt`,
+        type: "file",
+        sourceUrl: `/api/challenges?hint=${encodeURIComponent(c.id)}`,
+        mime: "text/plain",
+      })
+      catDir.children!.push(chDir)
+    }
+    challengesDir.children!.push(catDir)
+  }
+  root.children!.push(challengesDir)
+
+  // Daily shortcut
+  const dailyDir: FsNode = { name: "daily", path: "/daily", type: "dir", children: [] }
+  for (const c of challenges.filter((x) => x.daily)) {
+    dailyDir.children!.push({
+      name: `${c.id}.json`,
+      path: `/daily/${c.id}.json`,
+      type: "file",
+      sourceUrl: `/api/challenges?id=${encodeURIComponent(c.id)}`,
+      mime: "application/json",
+    })
+  }
+  root.children!.push(dailyDir)
+
+  return NextResponse.json(root)
+}
+\`\`\`
+
+\`\`\`typescript
+// app/api/leaderboard/route.ts
+import { NextResponse } from "next/server"
+import type { NextRequest } from "next/server"
+import { createServerSupabase } from "@/lib/supabase/server"
+
+export async function GET(_req: NextRequest) {
+  try {
+    const supabase = createServerSupabase()
+    const { data, error } = await supabase.from("leaderboard").select("*")
+    if (error) throw error
+    const rows = (data ?? []).map((r: any) => ({
+      team: r.team,
+      score: r.score ?? 0,
+      solves: r.solves ?? 0,
+    }))
+    const sorted = rows.sort((a, b) => b.score - a.score)
+    return NextResponse.json({
+      leaderboard: sorted.map((r, idx) => ({ rank: idx + 1, ...r })),
+      updatedAt: new Date().toISOString(),
+    })
+  } catch {
+    // Fallback
+    const leaderboard = [
+      { rank: 1, team: "greenhat", score: 450, solves: 5 },
+      { rank: 2, team: "root", score: 350, solves: 4 },
+      { rank: 3, team: "edita", score: 300, solves: 3 },
+      { rank: 4, team: "noobsec", score: 150, solves: 2 },
+    ]
+    return NextResponse.json({ leaderboard, updatedAt: new Date().toISOString() })
+  }
+}
+\`\`\`
+
+\`\`\`typescript
+// app/api/teams/route.ts
+import { NextResponse } from "next/server"
+import type { NextRequest } from "next/server"
+import { createServerSupabase } from "@/lib/supabase/server"
+
+export async function GET(_req: NextRequest) {
+  try {
+    const supabase = createServerSupabase()
+    const { data, error } = await supabase.from("teams").select("*")
+    if (error) throw error
+    return NextResponse.json({ teams: data ?? [], updatedAt: new Date().toISOString() })
+  } catch {
+    const teams = [
+      { name: "greenhat", members: 3, score: 450 },
+      { name: "root", members: 2, score: 350 },
+      { name: "edita", members: 1, score: 300 },
+      { name: "noobsec", members: 4, score: 150 },
+    ]
+    return NextResponse.json({ teams, updatedAt: new Date().toISOString() })
+  }
+}
+\`\`\`
+
+\`\`\`typescript
+// app/api/profile/route.ts
+import { NextResponse } from "next/server"
+import type { NextRequest } from "next/server"
+import { createServerSupabase } from "@/lib/supabase/server"
+
+export async function GET(req: NextRequest) {
+  const authHeader = req.headers.get("authorization") || ""
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : undefined
+  if (!token) return new NextResponse("Unauthorized", { status: 401 })
+  try {
+    const supabase = createServerSupabase(token)
+    const { data: userRes } = await supabase.auth.getUser()
+    const user = userRes?.user
+    if (!user) return new NextResponse("Unauthorized", { status: 401 })
+    const { data, error } = await supabase.from("profiles").select("*").eq("user_id", user.id).maybeSingle()
+    if (error) throw error
+    return NextResponse.json({ profile: data ?? null })
+  } catch (e: any) {
+    const msg = typeof e?.message === "string" ? e.message : "profiles table not found. Run DB setup."
+    return new NextResponse(msg, { status: 500 })
+  }
+}
+
+export async function POST(req: NextRequest) {
+  // Team changes are not allowed here; use /api/team/* endpoints.
+  const body = await req.json().catch(() => ({}))
+  if (body?.team || body?.team_name) {
+    return new NextResponse("Use /api/team/create or /api/team/join to change team.", { status: 400 })
+  }
+
+  const authHeader = req.headers.get("authorization") || ""
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : undefined
+  if (!token) return new NextResponse("Unauthorized", { status: 401 })
+
+  try {
+    const supabase = createServerSupabase(token)
+    const { data: userRes } = await supabase.auth.getUser()
+    const user = userRes?.user
+    if (!user) return new NextResponse("Unauthorized", { status: 401 })
+
+    const displayNameRaw = body?.display_name
+    if (typeof displayNameRaw !== "string") {
+      return new NextResponse("Missing display_name", { status: 400 })
+    }
+    const displayName = displayNameRaw.trim()
+    if (displayName.length < 3 || displayName.length > 32) {
+      return new NextResponse("display_name must be 3-32 characters", { status: 400 })
+    }
+    if (!/^[\w .-]+$/.test(displayName)) {
+      return new NextResponse("display_name allows letters, numbers, space, underscore, dot, and dash", { status: 400 })
+    }
+
+    // Ensure non-null team_name for NOT NULL constraint
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("team_name")
+      .eq("user_id", user.id)
+      .maybeSingle()
+    const teamName = existing?.team_name ?? "guest"
+
+    const payload: any = { user_id: user.id, team_name: teamName, display_name: displayName }
+    const { error } = await supabase.from("profiles").upsert(payload, { onConflict: "user_id" })
+    if (error) throw error
+
+    const { data: profile } = await supabase.from("profiles").select("*").eq("user_id", user.id).maybeSingle()
+    return NextResponse.json({ ok: true, profile })
+  } catch (e: any) {
+    const msg = typeof e?.message === "string" ? e.message : "profiles table not found. Run DB setup."
+    return new NextResponse(msg, { status: 500 })
+  }
+}
+\`\`\`
+
+\`\`\`typescript
+// app/page.tsx
+// Assuming necessary imports and component structure are already present
+
+import { useCallback, useEffect, useRef } from 'react'; // Make sure useCallback is imported
+
+// 1) Add this function near other command handlers:
+const doReload = useCallback(async () => {
+  try {
+    const [fsRes, chRes] = await Promise.all([fetch("/api/fs"), fetch("/api/challenges")])
+    if (!fsRes.ok || !chRes.ok) {
+      const t1 = !fsRes.ok ? await fsRes.text().catch(() => "") : ""
+      const t2 = !chRes.ok ? await chRes.text().catch(() => "") : ""
+      return `reload: failed. ${[t1, t2].filter(Boolean).join(" | ")}`
+    }
+    const fsData = (await fsRes.json()) as FsNode
+    const chData = (await chRes.json()) as { challenges: ChallengeMeta[] }
+    setFsRoot(fsData)
+    setChallenges(chData.challenges)
+    return "Reloaded CTF data."
+  } catch {
+    return "reload: error fetching data"
+  }
+}, [setFsRoot, setChallenges]); // Add dependencies to useCallback
+
+// 2) In doTeam(), replace the server update error branch with:
+// (Assuming doTeam function exists and has a server update error branch)
+// Example:
+// const doTeam = useCallback(async (team: string) => {
+//   // ... other code ...
+//   const res = await fetch("/api/profile", {
+//     method: "POST",
+//     headers: {
+//       "Content-Type": "application/json",
+//       Authorization: `Bearer ${token}`,
+//     },
+//     body: JSON.stringify({ team }),
+//   });
+//   if (!res.ok) {
+//     const msg = await res.text().catch(() => "");
+//     return `team set: failed to update server profile${msg ? ` - ${msg}` : ""} (local updated)`;
+//   }
+//   // ... other code ...
+// }, [token, setProfile]);
+
+// 3) In help text, add:
+// "- reload                       Refetch filesystem and challenges"
+// (Assuming help text is displayed somewhere in the component)
+// Example:
+// const helpText = [
+//   // ... other help text ...
+//   "- reload                       Refetch filesystem and challenges",
+// ];
+
+// 4) In handleCommand switch, add:
+// case "reload":
+//   out = await doReload()
+//   break
+// (Assuming handleCommand function exists and has a switch statement)
+// Example:
+// const handleCommand = useCallback(
+//   async (command: string) => {
+//     const [cmd, ...args] = command.split(" ");
+//     let out = "";
+//     switch (cmd) {
+//       // ... other cases ...
+//       case "reload":
+//         out = await doReload();
+//         break;
+//       default:
+//         out = `Unknown command: ${cmd}`;
+//     }
+//     return out;
+//   },
+//   [doReload] // Add dependencies to useCallback
+// );
+
+  const skipFocusRef = useRef(false)
+
+  useEffect(() => {
+    const handleMouseUp = () => {
+      const sel = window.getSelection && window.getSelection()
+      const hasSelection = !!sel && !sel.isCollapsed && (sel.toString()?.length ?? 0) > 0
+      // If user just selected text, skip the upcoming click's autofocus
+      skipFocusRef.current = hasSelection
+      if (hasSelection) {
+        // Clear the flag shortly after to allow future clicks to focus input
+        setTimeout(() => {
+          skipFocusRef.current = false
+        }, 250)
+      }
+    }
+    const handleClick = () => {
+      if (skipFocusRef.current) return
+      inputRef.current?.focus()
+    }
+    window.addEventListener("mouseup", handleMouseUp)
+    window.addEventListener("click", handleClick)
+    return () => {
+      window.removeEventListener("mouseup", handleMouseUp)
+      window.removeEventListener("click", handleClick)
+    }
+  }, [])
+\`\`\`

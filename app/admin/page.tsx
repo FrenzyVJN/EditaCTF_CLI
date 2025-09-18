@@ -98,6 +98,8 @@ export default function AdminPage() {
   const [session, setSession] = useState<any>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' })
+  const [loginError, setLoginError] = useState('')
   const [users, setUsers] = useState<AdminUser[]>([])
   const [challenges, setChallenges] = useState<AdminChallenge[]>([])
   const [activities, setActivities] = useState<AdminActivity[]>([])
@@ -121,10 +123,43 @@ export default function AdminPage() {
 
   const supabase = getSupabaseClient()
 
+  const handleAdminLogin = async () => {
+    setLoginError('')
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginForm.email,
+        password: loginForm.password,
+      })
+      
+      if (error) {
+        setLoginError(error.message)
+        return
+      }
+      
+      if (data.session) {
+        setSession(data.session)
+        // Check admin status
+        const res = await fetch("/api/admin/auth", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${data.session.access_token}` },
+        })
+        if (res.ok) {
+          setIsAdmin(true)
+        } else {
+          setLoginError('You do not have admin privileges')
+        }
+      }
+    } catch (error: any) {
+      setLoginError(error.message || 'Login failed')
+    }
+  }
+
   useEffect(() => {
     const checkAuth = async () => {
+      // First, try to get session from Supabase
       const { data } = await supabase.auth.getSession()
-      const s = data.session
+      let s = data.session
+      
       setSession(s)
 
       if (s) {
@@ -133,14 +168,47 @@ export default function AdminPage() {
             method: "POST",
             headers: { Authorization: `Bearer ${s.access_token}` },
           })
-          setIsAdmin(res.ok)
-        } catch {
+          if (res.ok) {
+            setIsAdmin(true)
+          } else {
+            const text = await res.text()
+            console.error('Admin auth failed:', text)
+            setIsAdmin(false)
+          }
+        } catch (error) {
+          console.error('Admin auth error:', error)
           setIsAdmin(false)
         }
+      } else {
+        // No session found, but let's check if user has manually authenticated
+        // This handles the case where terminal auth doesn't sync with browser session
+        console.log('No Supabase session found. Please authenticate via terminal first.')
       }
       setLoading(false)
     }
     checkAuth()
+    
+    // Also listen for auth state changes
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('Auth state changed:', event, session?.user?.email)
+      if (session) {
+        setSession(session)
+        // Recheck admin status
+        fetch("/api/admin/auth", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        .then(res => setIsAdmin(res.ok))
+        .catch(() => setIsAdmin(false))
+      } else {
+        setSession(null)
+        setIsAdmin(false)
+      }
+    })
+    
+    return () => {
+      subscription.subscription.unsubscribe()
+    }
   }, [supabase])
 
   const fetchUsers = useCallback(async () => {
@@ -373,16 +441,65 @@ export default function AdminPage() {
 
   if (!session) {
     return (
-      <div className="p-8">
+      <div className="p-8 max-w-md mx-auto">
         <Card>
           <CardHeader>
             <CardTitle>Admin Login Required</CardTitle>
           </CardHeader>
           <CardContent>
-            <p>Please log in to access the admin panel.</p>
-            <Button onClick={() => (window.location.href = "/")} className="mt-4">
-              Go to Terminal
-            </Button>
+            <div className="space-y-4">
+              <p>Please log in to access the admin panel.</p>
+              
+              {/* Simple login form */}
+              <div className="space-y-4 p-4 bg-gray-50 rounded">
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="admin@example.com"
+                    value={loginForm.email}
+                    onChange={(e) => setLoginForm({...loginForm, email: e.target.value})}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password">Password</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    placeholder="Enter password"
+                    value={loginForm.password}
+                    onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
+                  />
+                </div>
+                <Button 
+                  onClick={handleAdminLogin}
+                  disabled={!loginForm.email || !loginForm.password}
+                  className="w-full"
+                >
+                  Login to Admin Panel
+                </Button>
+                {loginError && (
+                  <p className="text-sm text-red-600">{loginError}</p>
+                )}
+              </div>
+              
+              <div className="text-sm text-gray-600 border-t pt-4">
+                <p>Alternative: Use the terminal interface</p>
+                <ul className="space-y-1 ml-4 mt-2">
+                  <li>• Go to terminal and login: <code className="bg-gray-100 px-1 rounded">auth login &lt;email&gt; &lt;password&gt;</code></li>
+                  <li>• Then refresh this page</li>
+                </ul>
+                <div className="mt-3 space-x-2">
+                  <Button onClick={() => (window.location.href = "/")} variant="outline" size="sm">
+                    Go to Terminal
+                  </Button>
+                  <Button onClick={() => window.location.reload()} variant="outline" size="sm">
+                    Refresh Page
+                  </Button>
+                </div>
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>

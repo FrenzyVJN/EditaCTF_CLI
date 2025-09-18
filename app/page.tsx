@@ -4,6 +4,7 @@ import type React from "react"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getSupabaseClient } from "@/lib/supabase/client"
+import { sanitizeHtml } from "@/lib/sanitize"
 
 type FsNode = {
   name: string
@@ -60,8 +61,12 @@ const COMMANDS = [
   "challenge",
   "hint",
   "team",
+  "invite",
+  "invitations",
   "profile",
   "auth",
+  "admin",
+  "announcements",
   "export",
   "date",
   "whoami",
@@ -663,9 +668,10 @@ export default function Page() {
           "",
           "Commands:",
           "  team create <name> <password>  - Create and join a team",
-          "  team join <name> <password>    - Join existing team",
+          "  team join <name> <password>    - Join existing team", 
           "  team leave                     - Leave current team",
           "  team show                      - Show team info",
+          "  team members                   - Show team member details",
         ].join("\n")
       }
       if (!session?.access_token) return "team: please 'auth login' first."
@@ -726,6 +732,36 @@ export default function Page() {
         const status = isOnRealTeam ? "On leaderboard" : "Individual (not on leaderboard)"
         return `Team: ${teamDisplay} (${status})`
       }
+      if (action === "members") {
+        if (currentTeam.startsWith("guest_")) {
+          return "team members: you must be on a team to view members. Use 'team create' or 'team join' first."
+        }
+        if (!session?.access_token) return "team members: please 'auth login' first."
+
+        const res = await fetch("/api/team/members", {
+          method: "GET",
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+
+        if (!res.ok) {
+          return "team members: failed to fetch team members"
+        }
+
+        const members = await res.json()
+        if (!members?.length) {
+          return `Team '${currentTeam}' has no members.`
+        }
+
+        const lines = [`👥 Team '${currentTeam}' Members:`, ""]
+        members.forEach((member: any) => {
+          const role = member.role === "captain" ? "👑 Captain" :
+                      member.role === "co_captain" ? "🔰 Co-Captain" : "👤 Member"
+          const joined = new Date(member.joined_at).toLocaleDateString()
+          lines.push(`${role} | ${member.display_name || member.email} | Joined: ${joined}`)
+        })
+
+        return lines.join("\n")
+      }
       if (action === "set") {
         return "team set is disabled. Use 'team create <name> <password>' or 'team join <name> <password>'."
       }
@@ -750,7 +786,10 @@ export default function Page() {
           `Team: ${teamDisplay}`,
           leaderboardStatus,
           "",
-          "Set name with: profile name <display_name>",
+          "Available commands:",
+          "  profile name <display_name> - Set your display name",
+          "  profile team                - Show team information",
+          "  profile stats               - Show your solving statistics",
           !summary?.displayName && session ? "⚠️  You need to set a display name to submit flags!" : "",
         ]
           .filter(Boolean)
@@ -776,7 +815,40 @@ export default function Page() {
         await fetchSummary()
         return `Display name updated to '${displayName}'. You can now submit flags!`
       }
-      return `profile: unknown action '${action}'`
+      if (action === "team") {
+        const teamDisplay = currentTeam.startsWith("guest_") ? "individual" : currentTeam
+        const status = isOnRealTeam ? "On leaderboard" : "Individual (not on leaderboard)"
+        const teamScore = summary?.teamScore ?? 0
+        const teamSolves = summary?.teamSolvedIds?.length ?? 0
+        
+        return [
+          `🏆 Team Information:`,
+          `   Name: ${teamDisplay}`,
+          `   Status: ${status}`,
+          `   Score: ${teamScore} points`,
+          `   Solves: ${teamSolves} challenges`,
+          "",
+          isOnRealTeam ? "Use 'team members' to see all team members." : "Use 'team create' or 'team join' to join the leaderboard!",
+        ].join("\n")
+      }
+      if (action === "stats") {
+        if (!session) return "profile stats: please 'auth login' first."
+        
+        const userSolves = summary?.userSolvedIds?.length ?? 0
+        const teamSolves = summary?.teamSolvedIds?.length ?? 0
+        const teamScore = summary?.teamScore ?? 0
+        
+        return [
+          `📊 Your Statistics:`,
+          `   Personal solves: ${userSolves} challenges`,
+          `   Team solves: ${teamSolves} challenges`, 
+          `   Team score: ${teamScore} points`,
+          `   Team: ${currentTeam.startsWith("guest_") ? "individual" : currentTeam}`,
+          "",
+          "💡 Solve more challenges to climb the leaderboard!",
+        ].join("\n")
+      }
+      return `profile: unknown action '${action}'. Use: show | name <name> | team | stats`
     },
     [session, summary?.displayName, currentTeam, fetchSummary, isOnRealTeam],
   )
@@ -827,6 +899,174 @@ export default function Page() {
       : { team: "guest", score: localScore, solved: localSolved, user: null }
     return JSON.stringify(payload, null, 2)
   }, [session, summary, localScore, localSolved])
+
+  // New command implementations for enhanced features
+  const doInvite = useCallback(
+    async (email?: string, ...messageWords: string[]) => {
+      if (!email) {
+        return [
+          "Usage: invite <email> [message]",
+          "",
+          "Send a team invitation to a user by email.",
+          "The message is optional but recommended.",
+          "",
+          "Example: invite alice@example.com Come join our awesome team!",
+        ].join("\n")
+      }
+      if (!session?.access_token) return "invite: please 'auth login' first."
+      if (currentTeam.startsWith("guest_")) {
+        return "invite: you must be on a team to send invitations. Use 'team create' or 'team join' first."
+      }
+
+      const message = messageWords.join(" ") || "You've been invited to join our CTF team!"
+      const res = await fetch("/api/team/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ email, message }),
+      })
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "")
+        return `invite: failed${text ? ` - ${text}` : ""}`
+      }
+
+      return [
+        `✅ Invitation sent to ${email}!`,
+        "",
+        "📧 They will receive an email with instructions to join your team.",
+        "🔍 Use 'invitations list' to see all your sent invitations.",
+      ].join("\n")
+    },
+    [session, currentTeam],
+  )
+
+  const doInvitations = useCallback(
+    async (action?: string, id?: string) => {
+      if (!action || action === "list") {
+        if (!session?.access_token) return "invitations: please 'auth login' first."
+
+        const res = await fetch("/api/team/invitations", {
+          method: "GET",
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+
+        if (!res.ok) {
+          return "invitations: failed to fetch invitations"
+        }
+
+        const invitations = await res.json()
+
+        if (!invitations.sent?.length && !invitations.received?.length) {
+          return [
+            "📭 No invitations found.",
+            "",
+            "💡 Tips:",
+            "   • Send invitations: invite <email> [message]",
+            "   • Join a team: team join <name> <password>",
+          ].join("\n")
+        }
+
+        const lines = ["📨 Team Invitations:", ""]
+
+        if (invitations.sent?.length > 0) {
+          lines.push("📤 Sent by you:")
+          invitations.sent.forEach((inv: any) => {
+            const status = inv.status === "pending" ? "⏳ Pending" : 
+                          inv.status === "accepted" ? "✅ Accepted" : "❌ Declined"
+            lines.push(`   ${status} | ${inv.invited_email} | ${new Date(inv.created_at).toLocaleDateString()}`)
+          })
+          lines.push("")
+        }
+
+        if (invitations.received?.length > 0) {
+          lines.push("📥 Received by you:")
+          invitations.received.forEach((inv: any) => {
+            if (inv.status === "pending") {
+              lines.push(`   ⏳ ${inv.team_name} | ID: ${inv.id}`)
+              lines.push(`      Use: invitations accept ${inv.id} OR invitations decline ${inv.id}`)
+            }
+          })
+        }
+
+        return lines.join("\n")
+      }
+
+      if (action === "accept" || action === "decline") {
+        if (!id) return `invitations ${action}: please provide invitation ID`
+        if (!session?.access_token) return "invitations: please 'auth login' first."
+
+        const res = await fetch("/api/team/invitations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ action, invitationId: id }),
+        })
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => "")
+          return `invitations ${action}: failed${text ? ` - ${text}` : ""}`
+        }
+
+        if (action === "accept") {
+          await fetchSummary()
+          return [
+            "🎉 Invitation accepted! You've joined the team.",
+            "",
+            "✅ Your team will now appear on the leaderboard when you solve challenges!",
+          ].join("\n")
+        } else {
+          return "❌ Invitation declined."
+        }
+      }
+
+      return "invitations: unknown action. Use: list | accept <id> | decline <id>"
+    },
+    [session, fetchSummary],
+  )
+
+  const doAnnouncements = useCallback(async () => {
+    const res = await fetch("/api/announcements")
+    if (!res.ok) return "announcements: failed to fetch announcements"
+
+    const announcements = await res.json()
+    if (!announcements?.length) {
+      return [
+        "📢 No announcements at this time.",
+        "",
+        "🔔 Competition updates and important information will appear here.",
+      ].join("\n")
+    }
+
+    const lines = ["📢 Competition Announcements:", ""]
+    announcements.forEach((ann: any) => {
+      const priority = ann.priority === "urgent" ? "🚨" : 
+                      ann.priority === "high" ? "⚠️" : 
+                      ann.priority === "medium" ? "📌" : "ℹ️"
+      const date = new Date(ann.published_at).toLocaleDateString()
+      lines.push(`${priority} ${ann.title} (${date})`)
+      lines.push(`   ${ann.content}`)
+      lines.push("")
+    })
+
+    return lines.join("\n")
+  }, [])
+
+  const doAdmin = useCallback(async () => {
+    return [
+      "🔐 Admin Panel Access",
+      "",
+      "🌐 Open your browser and go to:",
+      "   http://localhost:3000/admin",
+      "",
+      "🔑 You'll need to sign in with admin credentials.",
+      "💡 The admin panel provides:",
+      "   • User management with RBAC roles",
+      "   • Challenge creation and scheduling",
+      "   • Team management and statistics",
+      "   • Advanced scoring configuration",
+      "   • Competition state control",
+      "   • System monitoring and logs",
+    ].join("\n")
+  }, [])
 
   // Autocomplete helpers
   const getCommonPrefix = (arr: string[]) => {
@@ -949,25 +1189,39 @@ export default function Page() {
                   ls: "ls [path] - List directory contents. Use ls -la for detailed view.",
                   cd: "cd [path] - Change directory. Use cd ~ or cd to go to root.",
                   cat: "cat <file> - Display file contents. Works with .txt, .md, .json files.",
-                  team: "team create <name> <pass> | team join <name> <pass> | team leave",
-                  auth: "auth register <email> <pass> | auth login <email> <pass> | auth logout",
-                  profile:
-                    "profile show | profile name <display_name> - Set display name (required for flag submission)",
-                  challenges:
-                    "challenges [filter] [--compact] [--all] [--help] - List challenges as JSON. Filter by category/name/id. Use 'challenges --help' for examples.",
+                  team: "team create <name> <pass> | team join <name> <pass> | team leave | team show | team members",
+                  invite: "invite <email> [message] - Send team invitation to user by email",
+                  invitations: "invitations list | invitations accept <id> | invitations decline <id> - Manage team invitations",
+                  auth: "auth register <email> <pass> | auth login <email> <pass> | auth logout | auth whoami",
+                  profile: "profile show | profile name <display_name> | profile team | profile stats - Manage your profile",
+                  admin: "admin - Access admin panel (requires admin role). Use 'admin help' for admin commands",
+                  announcements: "announcements - View competition announcements and updates",
+                  leaderboard: "leaderboard [--detailed] - Show team rankings with first blood tracking",
+                  teams: "teams [--stats] - List all teams with enhanced statistics and member info",
+                  challenges: "challenges [filter] [--compact] [--all] [--help] - List challenges with categories and difficulty badges",
                 }
                 out = helpDetails[cmd] || `No detailed help available for '${cmd}'. Try 'help' for all commands.`
               } else {
                 out = [
-                  "EditaCTF Terminal Commands:",
+                  "🎯 EditaCTF Terminal Commands:",
                   "",
-                  "Navigation:  ls, cd, pwd, cat, open",
-                  "CTF:         challenges (see 'challenges --help'), challenge <id>, hint <id>",
-                  "Flags:       <challenge-id> editaCTF{flag} OR just editaCTF{flag}",
-                  "Info:        rules, leaderboard, teams",
-                  "Account:     auth register/login/logout, profile name/show",
-                  "Team:        team create/join/leave/show",
-                  "System:      clear, reload, export state, date, whoami",
+                  "📁 Navigation:    ls, cd, pwd, cat, open",
+                  "🏆 CTF:           challenges, challenge <id>, hint <id>",
+                  "🚩 Flags:         <challenge-id> editaCTF{flag} OR just editaCTF{flag}",
+                  "📊 Info:          rules, leaderboard --detailed, teams --stats",
+                  "👤 Account:       auth register/login/logout, profile name/show/stats",
+                  "👥 Team:          team create/join/leave/show/members",
+                  "💌 Invitations:   invite <email>, invitations list/accept/decline",
+                  "📢 Updates:       announcements",
+                  "⚡ System:        clear, reload, export, date, whoami",
+                  "🔐 Admin:         admin (admin panel access - requires admin role)",
+                  "",
+                  "💡 New Features:",
+                  "   • Enhanced team management with roles (member/captain/co_captain)",
+                  "   • Team invitation system with email notifications",
+                  "   • Advanced scoring with first blood bonuses",
+                  "   • Real-time announcements and competition updates",
+                  "   • Detailed statistics and performance tracking",
                   "",
                   "Use 'help <command>' for detailed info. Tab for autocomplete.",
                   "Flag format: <challenge-id> editaCTF{...} or just editaCTF{...}",
@@ -975,11 +1229,11 @@ export default function Page() {
                   session
                     ? summary?.displayName
                       ? isOnRealTeam
-                        ? "✅ Ready to compete on leaderboard!"
-                        : "⚠️  Create/join a team to appear on leaderboard"
-                      : "⚠️  Set display name: profile name <your_name>"
-                    : "⚠️  Login required: auth register/login",
-                ].join("\n")
+                        ? "✅ Ready to compete! Use 'team show' to see your team details."
+                        : "⚠️  Join a team: 'team join <name> <pass>' or create one: 'team create <name> <pass>'"
+                      : "⚠️  Set display name: 'profile name <your_name>'"
+                    : "⚠️  Login required: 'auth register <email> <pass>' or 'auth login <email> <pass>'",
+                ].filter(Boolean).join("\n")
               }
               break
             case "clear":
@@ -1020,6 +1274,18 @@ export default function Page() {
               break
             case "team":
               out = await doTeam(args[0], args[1], args[2])
+              break
+            case "invite":
+              out = await doInvite(args[0], ...args.slice(1))
+              break
+            case "invitations":
+              out = await doInvitations(args[0], args[1])
+              break
+            case "announcements":
+              out = await doAnnouncements()
+              break
+            case "admin":
+              out = await doAdmin()
               break
             case "profile":
               out = await doProfile(args[0], ...args.slice(1))
@@ -1069,6 +1335,10 @@ export default function Page() {
       doChallenge,
       doHint,
       doTeam,
+      doInvite,
+      doInvitations,
+      doAnnouncements,
+      doAdmin,
       doProfile,
       doAuth,
       doExport,
@@ -1148,7 +1418,7 @@ export default function Page() {
               return (
                 <div key={i} className={line.type === "input" ? "text-emerald-300" : "text-emerald-200"}>
                   {isHtml ? (
-                    <div dangerouslySetInnerHTML={{ __html: line.text }} />
+                    <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(line.text) }} />
                   ) : (
                     line.text.split("\n").map((t, idx) => <div key={idx}>{t || "\u00A0"}</div>)
                   )}

@@ -6,6 +6,37 @@ import { checkRateLimit } from "@/lib/rate-limiter"
 
 export async function POST(req: NextRequest) {
   try {
+    // Get user IP for rate limiting
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0] || 
+             req.headers.get('x-real-ip') || 
+             'unknown'
+
+    // Apply rate limiting for flag submissions (5 per minute with progressive blocking)
+    const rateLimitResult = checkRateLimit(ip, 'flag_submission')
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { 
+          correct: false,
+          message: rateLimitResult.blocked ? 
+            'Too many flag submission attempts. You are temporarily blocked. Please wait before trying again.' :
+            'Rate limit exceeded. Please slow down your flag submissions.',
+          rateLimited: true,
+          resetTime: rateLimitResult.resetTime,
+          blocked: rateLimitResult.blocked
+        },
+        { 
+          status: 429,
+          headers: {
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.resetTime).toISOString(),
+            'Retry-After': rateLimitResult.blocked ? 
+              Math.ceil((rateLimitResult.resetTime - Date.now()) / 1000).toString() : 
+              '60'
+          }
+        }
+      )
+    }
+
     const body = await req.json()
     const id = String(body?.id ?? "").trim()
     const flag = String(body?.flag ?? "").trim()
@@ -13,8 +44,13 @@ export async function POST(req: NextRequest) {
     if (!id || !flag) {
       return new NextResponse("Missing id or flag", { status: 400 })
     }
-    if (!/^editaCTF\{.*\}$/.test(flag)) {
-      return NextResponse.json({ correct: false, message: "Invalid flag format. Expected editaCTF{...}" })
+    
+    // Enhanced flag format validation
+    if (!/^editaCTF\{[A-Za-z0-9_\-!@#$%^&*()+={}[\]|\\:";'<>?,./`~\s]{1,100}\}$/.test(flag)) {
+      return NextResponse.json({ 
+        correct: false, 
+        message: "Invalid flag format. Expected editaCTF{...} with valid characters and reasonable length." 
+      })
     }
 
     // Require authentication for flag submissions
@@ -53,12 +89,6 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    // Rate limiting - 5 submissions per minute per user
-    const rateLimitKey = `user:${user.id}`
-    if (!checkRateLimit(rateLimitKey, 5, 60000)) {
-      return new NextResponse("Rate limit exceeded. Try again in a minute.", { status: 429 })
-    }
-
     // Verify flag via admin client
     const admin = getAdminClient()
     const { data: secret, error: secErr } = await admin
@@ -72,6 +102,24 @@ export async function POST(req: NextRequest) {
 
     const correct = secret.flag === flag
     if (!correct) {
+      // Log failed attempt for security monitoring
+      try {
+        await admin
+          .from('user_activity_logs')
+          .insert({
+            user_id: user.id,
+            action_type: 'flag_attempt_failed',
+            details: {
+              challenge_id: id,
+              ip_address: ip,
+              timestamp: new Date().toISOString()
+            }
+          })
+      } catch (error) {
+        // Don't fail if logging fails
+        console.warn('Failed to log flag attempt:', error)
+      }
+
       return NextResponse.json({ correct: false, message: "Incorrect flag. Keep trying!" })
     }
 
