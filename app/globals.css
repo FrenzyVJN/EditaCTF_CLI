@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* Minimal base styles for the terminal UI */
+@layer base {
+  html, body {
+    @apply bg-black text-emerald-200;
+  }
+}
