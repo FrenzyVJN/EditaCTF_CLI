@@ -56,7 +56,7 @@ export async function GET(req: NextRequest) {
       environment: {
         adminEmails: ADMIN_EMAILS,
         nodeEnv: process.env.NODE_ENV,
-        supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/^https?:\/\//, "").split(".")[0] + ".supabase.co",
+        supabaseUrl: process.env.NEXT_PRIVATE_SUPABASE_URL?.replace(/^https?:\/\//, "").split(".")[0] + ".supabase.co",
       },
     })
   } catch (e) {
