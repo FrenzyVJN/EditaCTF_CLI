@@ -4,7 +4,6 @@ import './globals.css'
 export const metadata: Metadata = {
 title: 'EditaCTF Terminal',
 description: 'Terminal-based CTF platform',
-generator: 'v0.dev',
 }
 
 export default function RootLayout({
