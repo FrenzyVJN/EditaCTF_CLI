@@ -1,11 +1,11 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 export function createServerSupabase(authBearerToken?: string): SupabaseClient {
-  const url = process.env.NEXT_PRIVATE_SUPABASE_URL
-  const anon = process.env.NEXT_PRIVATE_SUPABASE_ANON_KEY
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   if (!url || !anon) {
     throw new Error(
-      "Supabase is not configured on server. Add NEXT_PRIVATE_SUPABASE_URL and NEXT_PRIVATE_SUPABASE_ANON_KEY.",
+      "Supabase is not configured on server. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.",
     )
   }
 

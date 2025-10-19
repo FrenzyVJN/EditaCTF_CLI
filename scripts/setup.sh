@@ -82,19 +82,19 @@ ENV_FILE="$ROOT_DIR/.env"
 SUPA_URL="https://${PROJECT_REF}.supabase.co"
 if [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<EOF
-NEXT_PRIVATE_SUPABASE_URL=${SUPA_URL}
-NEXT_PRIVATE_SUPABASE_ANON_KEY=${INPUT_ANON:-REPLACE_WITH_ANON_KEY}
+NEXT_PUBLIC_SUPABASE_URL=${SUPA_URL}
+NEXT_PUBLIC_SUPABASE_ANON_KEY=${INPUT_ANON:-REPLACE_WITH_ANON_KEY}
 ADMIN_EMAILS=${INPUT_ADMINS:-}
 EOF
   log "Created .env"
 else
   tmp="$ENV_FILE.tmp.$$"
   awk -v url="$SUPA_URL" -v anon="${INPUT_ANON}" -v admins="${INPUT_ADMINS}" 'BEGIN{u=0;a=0;m=0}
-    /^NEXT_PRIVATE_SUPABASE_URL=/{print "NEXT_PRIVATE_SUPABASE_URL="url;u=1;next}
-    /^NEXT_PRIVATE_SUPABASE_ANON_KEY=/{if(anon!=""){print "NEXT_PRIVATE_SUPABASE_ANON_KEY="anon;a=1;next}}
+    /^NEXT_PUBLIC_SUPABASE_URL=/{print "NEXT_PUBLIC_SUPABASE_URL="url;u=1;next}
+    /^NEXT_PUBLIC_SUPABASE_ANON_KEY=/{if(anon!=""){print "NEXT_PUBLIC_SUPABASE_ANON_KEY="anon;a=1;next}}
     /^ADMIN_EMAILS=/{if(admins!=""){print "ADMIN_EMAILS="admins;m=1;next} else {m=1}}
     {print}
-    END{if(!u)print "NEXT_PRIVATE_SUPABASE_URL="url; if(anon!=""&&!a)print "NEXT_PRIVATE_SUPABASE_ANON_KEY="anon; if(admins!=""&&!m)print "ADMIN_EMAILS="admins}' "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
+    END{if(!u)print "NEXT_PUBLIC_SUPABASE_URL="url; if(anon!=""&&!a)print "NEXT_PUBLIC_SUPABASE_ANON_KEY="anon; if(admins!=""&&!m)print "ADMIN_EMAILS="admins}' "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
   log "Updated .env"
 fi
 
