@@ -67,7 +67,8 @@ export async function POST(req: NextRequest) {
       .eq("challenge_id", id)
       .single()
     if (secErr || !secret) {
-      return new NextResponse("Unknown challenge id.", { status: 400 })
+      console.error("Flag verification error:", secErr, "Challenge ID:", id)
+      return new NextResponse(`Unknown challenge id: ${id}. Error: ${secErr?.message || 'No flag found'}`, { status: 400 })
     }
 
     const correct = secret.flag === flag
