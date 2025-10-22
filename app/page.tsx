@@ -523,7 +523,7 @@ export default function Page() {
     const lines = [
       `ID: ${c.id}`,
       `Name: ${c.name}`,
-      `Category: ${c.category}    Points: ${c.points}    Difficulty: ${c.difficulty}    Daily: ${c.daily ? "yes" : "no"}`,
+      `Category: ${c.category}    Points: ${c.points}    Difficulty: ${c.difficulty}`,
       "",
       "Description:",
       c.description,
