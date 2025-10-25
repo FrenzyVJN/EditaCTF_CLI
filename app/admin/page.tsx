@@ -34,77 +34,19 @@ import {
   TrendingUp,
 } from "lucide-react"
 
-type AdminUser = {
-  user_id: string
-  display_name: string | null
-  team_name: string
-  email: string
-  email_confirmed: boolean
-  last_sign_in: string | null
-  created_at: string
-  solveCount: number
-}
-
-type AdminChallenge = {
-  id: string
-  name: string
-  category: string
-  points: number
-  difficulty: string
-  description: string
-  daily: boolean
-  files: string[]
-  hint: string
-  flag: string | null
-  solveCount: number
-}
-
-type AdminActivity = {
-  id: string
-  type: "solve" | "admin"
-  description: string
-  created_at: string
-  user_name?: string
-  team_name?: string
-  challenge_name?: string
-  points?: number
-  action?: string
-  target_type?: string
-}
-
-type AdminTeam = {
-  name: string
-  members: number
-  score: number
-  isPasswordProtected: boolean
-  created_at: string | null
-  members: Array<{
-    user_id: string
-    display_name: string | null
-    joined_at: string
-  }>
-}
-
-type SystemStats = {
-  totalUsers: number
-  totalChallenges: number
-  totalSolves: number
-  totalTeams: number
-  recentSolves: number
-  lastActivity: string | null
-}
+import type { AdminUserView, AdminChallengeView, AdminActivity, AdminTeamView, SystemStats } from "@/app/types"
 
 export default function AdminPage() {
   const [session, setSession] = useState<any>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [users, setUsers] = useState<AdminUser[]>([])
-  const [challenges, setChallenges] = useState<AdminChallenge[]>([])
+  const [users, setUsers] = useState<AdminUserView[]>([])
+  const [challenges, setChallenges] = useState<AdminChallengeView[]>([])
   const [activities, setActivities] = useState<AdminActivity[]>([])
-  const [teams, setTeams] = useState<AdminTeam[]>([])
+  const [teams, setTeams] = useState<AdminTeamView[]>([])
   const [admins, setAdmins] = useState<any[]>([])
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null)
-  const [editingUser, setEditingUser] = useState<AdminUser | null>(null)
+  const [editingUser, setEditingUser] = useState<AdminUserView | null>(null)
   const [newAdminEmail, setNewAdminEmail] = useState("")
   const [newChallenge, setNewChallenge] = useState({
     id: "",

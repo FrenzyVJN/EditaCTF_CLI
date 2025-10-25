@@ -2,16 +2,7 @@ import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
 import { createServerSupabase } from "@/lib/supabase/server"
 import { rulesText as fallbackRules } from "@/lib/ctf-data"
-
-type FsNode = {
-  name: string
-  path: string
-  type: "dir" | "file"
-  children?: FsNode[]
-  content?: string
-  mime?: string
-  sourceUrl?: string
-}
+import { FsNode } from "@/app/types"
 
 function baseFS(): FsNode {
   const root: FsNode = { name: "/", path: "/", type: "dir", children: [] }

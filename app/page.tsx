@@ -5,42 +5,7 @@ import type React from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getSupabaseClient } from "@/lib/supabase/client"
 
-type FsNode = {
-  name: string
-  path: string
-  type: "dir" | "file"
-  children?: FsNode[]
-  content?: string
-  mime?: string
-  sourceUrl?: string
-}
-
-type ChallengeMeta = {
-  id: string
-  name: string
-  category: string
-  points: number
-  difficulty: "easy" | "medium" | "hard" | string
-  daily?: boolean
-}
-
-type LeaderboardRow = {
-  rank: number
-  team: string
-  score: number
-  solves: number
-}
-
-type TeamsRow = {
-  name: string
-  members: number
-  score: number
-}
-
-type TerminalLine = {
-  type: "input" | "output" | "system"
-  text: string
-}
+import type { FsNode, ChallengeMeta, LeaderboardRow, TeamsRow, TerminalLine } from "@/app/types"
 
 const WELCOME = ["Welcome to EditaCTF!", "Type 'help' to see available commands.", ""].join("\n")
 const DEFAULT_HOST = "EditaCTF"
