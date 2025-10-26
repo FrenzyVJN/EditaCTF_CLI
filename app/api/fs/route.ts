@@ -3,6 +3,17 @@ import type { NextRequest } from "next/server"
 import { createServerSupabase } from "@/lib/supabase/server"
 import { rulesText as fallbackRules } from "@/lib/ctf-data"
 import { FsNode } from "@/app/types"
+// Helper to recursively find a node by path
+function findNodeByPath(node: FsNode, path: string): FsNode | undefined {
+  if (node.path === path) return node
+  if (node.children) {
+    for (const child of node.children) {
+      const found = findNodeByPath(child, path)
+      if (found) return found
+    }
+  }
+  return undefined
+}
 
 function baseFS(): FsNode {
   const root: FsNode = { name: "/", path: "/", type: "dir", children: [] }
@@ -14,7 +25,6 @@ function baseFS(): FsNode {
     type: "file",
     sourceUrl: "/api/rules",
     mime: "text/plain",
-    content: fallbackRules,
   })
 
   root.children!.push({
@@ -37,6 +47,9 @@ function baseFS(): FsNode {
 }
 
 export async function GET(_req: NextRequest) {
+  const { searchParams } = _req.nextUrl
+  const path = searchParams.get("path")
+
   const supabase = createServerSupabase()
   const { data: challenges } = await supabase
     .from("challenges")
@@ -75,19 +88,6 @@ export async function GET(_req: NextRequest) {
         path: `${chDir.path}/README.md`,
         type: "file",
         mime: "text/markdown",
-        content: [
-          `# ${c.name}`,
-          ``,
-          `ID: ${c.id}`,
-          `Category: ${c.category}`,
-          `Points: ${c.points}`,
-          `Difficulty: ${c.difficulty}`,
-          `Daily: ${c.daily ? "yes" : "no"}`,
-          ``,
-          `Use 'challenge ${c.id}' to view full details and files.`,
-          `Use 'hint ${c.id}' to reveal a hint.`,
-          `Submit with: submit ${c.id} editaCTF{your_flag_here}`,
-        ].join("\n"),
       })
       chDir.children!.push({
         name: "challenge.txt",
@@ -123,5 +123,44 @@ export async function GET(_req: NextRequest) {
   }
   root.children!.push(dailyDir)
 
+  // If a path is provided, return only that node (with content if available)
+  if (path) {
+    const node = findNodeByPath(root, path)
+    if (!node) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 })
+    }
+    // For rules.txt, provide fallback content
+    if (node.path === "/rules.txt") {
+      return NextResponse.json({ ...node, content: fallbackRules })
+    }
+    // For README.md, generate content on demand
+    if (node.name === "README.md" && node.path.startsWith("/challenges/")) {
+      // Extract challenge info from path
+      const parts = node.path.split("/")
+      const category = parts[2]
+      const id = parts[3]
+      const challenge = (challenges ?? []).find((c) => c.id === id && c.category === category)
+      if (challenge) {
+        const content = [
+          `# ${challenge.name}`,
+          ``,
+          `ID: ${challenge.id}`,
+          `Category: ${challenge.category}`,
+          `Points: ${challenge.points}`,
+          `Difficulty: ${challenge.difficulty}`,
+          `Daily: ${challenge.daily ? "yes" : "no"}`,
+          ``,
+          `Use 'challenge ${challenge.id}' to view full details and files.`,
+          `Use 'hint ${challenge.id}' to reveal a hint.`,
+          `Submit with: submit ${challenge.id} editaCTF{your_flag_here}`,
+        ].join("\n")
+        return NextResponse.json({ ...node, content })
+      }
+    }
+    // For other files, just return node (content may be fetched from sourceUrl by frontend)
+    return NextResponse.json(node)
+  }
+
+  // Default: return the whole tree (names/metadata only)
   return NextResponse.json(root)
 }
