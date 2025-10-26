@@ -809,11 +809,45 @@ export default function Page() {
   const getPathCandidates = useCallback(
     (prefix: string) => {
       if (!fsRoot) return []
-      const cur = findNode(fsRoot, joinPath(cwd))
-      const names = listChildren(cur)
-      return names.filter((n) => n.startsWith(prefix))
+      
+      // Determine the base directory and the partial name to match
+      let basePath: string
+      let partialName: string
+      
+      if (prefix.startsWith('/')) {
+        // Absolute path
+        const lastSlash = prefix.lastIndexOf('/')
+        basePath = lastSlash === 0 ? '/' : prefix.substring(0, lastSlash)
+        partialName = prefix.substring(lastSlash + 1)
+      } else if (prefix.includes('/')) {
+        // Relative path with subdirectories
+        const lastSlash = prefix.lastIndexOf('/')
+        const relativePath = prefix.substring(0, lastSlash)
+        partialName = prefix.substring(lastSlash + 1)
+        
+        // Resolve relative path from current directory
+        basePath = resolvePath(relativePath)
+      } else {
+        // Simple name in current directory
+        basePath = joinPath(cwd)
+        partialName = prefix
+      }
+      
+      const baseNode = findNode(fsRoot, basePath)
+      if (!baseNode) return []
+      
+      const names = listChildren(baseNode)
+      const matches = names.filter((n) => n.startsWith(partialName))
+      
+      // For relative/absolute paths, prepend the directory path
+      if (prefix.includes('/')) {
+        const dirPrefix = prefix.substring(0, prefix.lastIndexOf('/') + 1)
+        return matches.map((n) => dirPrefix + n)
+      }
+      
+      return matches
     },
-    [cwd, fsRoot],
+    [cwd, fsRoot, resolvePath],
   )
   const getChallengeCandidates = useCallback(
     (prefix: string) => {
