@@ -93,6 +93,8 @@ export default function Page() {
   const [input, setInput] = useState("")
   const [cwd, setCwd] = useLocalStorage<string[]>("edita-ctf:cwd", [])
   const [fsRoot, setFsRoot] = useState<FsNode | null>(null)
+  // Cache for file contents: { [path]: content }
+  const [fileCache, setFileCache] = useState<Record<string, string>>({})
   const [challenges, setChallenges] = useState<ChallengeMeta[]>([])
   const termEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -300,23 +302,64 @@ export default function Page() {
     [fsRoot, resolvePath],
   )
 
-  const fetchFileContent = useCallback(async (node: FsNode): Promise<string> => {
-    if (node.content) return node.content
+  // Lazy fetch and cache file content
+  const fetchFileContent = useCallback(async (node: FsNode, forceRefresh = false): Promise<string> => {
+    if (!node.path) return `cat: ${node.name}: Invalid path`
+    // Use cache unless forceRefresh
+    if (!forceRefresh && fileCache[node.path]) return fileCache[node.path]
+
+    // Client-side generation for README.md in /challenges/*/*
+    if (node.name === "README.md" && node.path.startsWith("/challenges/")) {
+      const parts = node.path.split("/")
+      const category = parts[2]
+      const id = parts[3]
+      const challenge = challenges.find((c) => c.id === id && c.category === category)
+      if (challenge) {
+        const content = [
+          `# ${challenge.name}`,
+          ``,
+          `ID: ${challenge.id}`,
+          `Category: ${challenge.category}`,
+          `Points: ${challenge.points}`,
+          `Difficulty: ${challenge.difficulty}`,
+          `Daily: ${challenge.daily ? "yes" : "no"}`,
+          ``,
+          `Use 'challenge ${challenge.id}' to view full details and files.`,
+          `Use 'hint ${challenge.id}' to reveal a hint.`,
+          `Submit with: submit ${challenge.id} editaCTF{your_flag_here}`,
+        ].join("\n")
+        setFileCache((cache) => ({ ...cache, [node.path]: content }))
+        return content
+      }
+    }
+
+    // Prefer API fetch for all other files
+    const res = await fetch(`/api/fs?path=${encodeURIComponent(node.path)}`)
+    if (!res.ok) return `cat: ${node.name}: Failed to fetch content`
+    const data = await res.json()
+    if (typeof data.content === "string") {
+      setFileCache((cache) => ({ ...cache, [node.path]: data.content }))
+      return data.content
+    }
+    // If no content, fallback to sourceUrl if present
     if (node.sourceUrl) {
-      const res = await fetch(node.sourceUrl)
+      const res2 = await fetch(node.sourceUrl)
       const isText = node.mime?.startsWith("text/") || node.sourceUrl.endsWith(".txt") || node.sourceUrl.endsWith(".md")
       if (isText) {
-        const txt = await res.text()
+        const txt = await res2.text()
+        setFileCache((cache) => ({ ...cache, [node.path]: txt }))
         return txt
       }
-      const json = await res.json()
-      return JSON.stringify(json, null, 2)
+      const json = await res2.json()
+      const txt = JSON.stringify(json, null, 2)
+      setFileCache((cache) => ({ ...cache, [node.path]: txt }))
+      return txt
     }
     return `cat: ${node.name}: No content`
-  }, [])
+  }, [fileCache, challenges])
 
   const doCat = useCallback(
-    async (target?: string) => {
+    async (target?: string, opts?: { refresh?: boolean }) => {
       if (!target) return "cat: missing file operand"
       if (!fsRoot) return "Filesystem not loaded."
       const path = resolvePath(target)
@@ -324,7 +367,7 @@ export default function Page() {
       if (!node) return `cat: ${target}: No such file or directory`
       if (node.type !== "file") return `cat: ${target}: Is a directory`
       try {
-        const txt = await fetchFileContent(node)
+        const txt = await fetchFileContent(node, opts?.refresh)
         return txt
       } catch {
         return `cat: ${target}: Failed to read file`
@@ -332,6 +375,9 @@ export default function Page() {
     },
     [fsRoot, resolvePath, fetchFileContent],
   )
+  // Example: add a command to refresh file content (live update)
+  // Usage: cat <file> --refresh
+  // Already supported via doCat(target, { refresh: true })
 
   const doOpen = useCallback(async (target?: string) => doCat(target), [doCat])
 
