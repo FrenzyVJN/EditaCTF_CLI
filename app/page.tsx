@@ -4,34 +4,12 @@ import type React from "react"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getSupabaseClient } from "@/lib/supabase/client"
+import { runCli, type CliContext, COMMANDS } from "@/lib/cli"
 
 import type { FsNode, ChallengeMeta, LeaderboardRow, TeamsRow, TerminalLine } from "@/app/types"
 
 const WELCOME = ["Welcome to EditaCTF!", "Type 'help' to see available commands.", ""].join("\n")
 const DEFAULT_HOST = "EditaCTF"
-
-const COMMANDS = [
-  "help",
-  "clear",
-  "ls",
-  "cd",
-  "pwd",
-  "cat",
-  "open",
-  "rules",
-  "leaderboard",
-  "teams",
-  "challenges",
-  "challenge",
-  "hint",
-  "team",
-  "profile",
-  "auth",
-  "export",
-  "date",
-  "whoami",
-  "reload",
-]
 
 function joinPath(parts: string[]): string {
   const path = "/" + parts.filter(Boolean).join("/")
@@ -164,6 +142,7 @@ export default function Page() {
     }
   }, [session?.access_token])
 
+  // Load initial data on mount
   useEffect(() => {
     reloadData()
   }, [reloadData])
@@ -337,8 +316,8 @@ export default function Page() {
           `Daily: ${challenge.daily ? "yes" : "no"}`,
           ``,
           `Use 'challenge ${challenge.id}' to view full details and files.`,
-          `Use 'hint ${challenge.id}' to reveal a hint.`,
-          `Submit with: submit ${challenge.id} editaCTF{your_flag_here}`,
+          `Use 'challenge ${challenge.id} -i' to reveal a hint.`,
+          `Submit with: challenge ${challenge.id} -s editaCTF{your_flag_here}`,
         ].join("\n")
         setFileCache((cache) => ({ ...cache, [node.path]: content }))
         return content
@@ -390,6 +369,13 @@ export default function Page() {
   // Example: add a command to refresh file content (live update)
   // Usage: cat <file> --refresh
   // Already supported via doCat(target, { refresh: true })
+
+  const doClear = useCallback(() => {
+    setHistory([])
+    return ""
+  }, [])
+
+  const doDate = useCallback(() => new Date().toString(), [])
 
   const doOpen = useCallback(async (target?: string) => doCat(target), [doCat])
 
@@ -538,35 +524,6 @@ export default function Page() {
     return { challenge: data.challenge, hint: data.hint ?? null }
   }, [challengeBundleCache])
 
-  const doChallenge = useCallback(async (id?: string) => {
-    if (!id) return "challenge: missing challenge id"
-    const bundle = await fetchChallengeBundle(id)
-    if (!bundle || !bundle.challenge) return `challenge: '${id}' not found`
-    const c = bundle.challenge
-    const lines = [
-      `ID: ${c.id}`,
-      `Name: ${c.name}`,
-      `Category: ${c.category}    Points: ${c.points}    Difficulty: ${c.difficulty}`,
-      "",
-      "Description:",
-      c.description,
-      "",
-      "Files:",
-      ...(c.files?.length ? c.files.map((f: string) => ` - ${f}`) : [" (none)"]),
-      "",
-      "Submit format: <challenge-id> editaCTF{...}",
-    ]
-    return lines.join("\n")
-  }, [fetchChallengeBundle])
-
-  const doHint = useCallback(async (id?: string) => {
-    if (!id) return "hint: missing challenge id"
-    const bundle = await fetchChallengeBundle(id)
-    if (!bundle) return `hint: '${id}' not found`
-    if (bundle.hint) return `Hint for ${id}: ${bundle.hint}`
-    return `No hint available for ${id}`
-  }, [fetchChallengeBundle])
-
   const doSubmit = useCallback(
     async (id?: string, flag?: string) => {
       if (!id || !flag) return "Flag submission failed: missing challenge ID or flag"
@@ -581,7 +538,7 @@ export default function Page() {
           "2. auth login <your-email> <password>",
           "3. profile name <your-display-name>",
           "4. team create <team-name> <team-password>",
-          "5. <challenge-id> editaCTF{your_flag}",
+          "5. challenge <challenge-id> --submit editaCTF{your_flag}",
         ].join("\n")
       }
 
@@ -619,55 +576,41 @@ export default function Page() {
     [session, fetchSummary, summary?.displayName],
   )
 
-  // Auto-detect flag submission
-  const detectFlagSubmission = useCallback(
-    async (input: string) => {
-      // Check if input is just a flag (editaCTF{...})
-      const flagOnlyMatch = input.match(/^editaCTF\{[^}]*\}$/)
-      if (flagOnlyMatch) {
-        const flag = flagOnlyMatch[0]
-
-        // Try to find a matching challenge by checking recent challenges or user context
-        // For now, let's ask the user to specify which challenge
-        return [
-          "🏁 Flag detected! Which challenge is this for?",
-          "",
-          "Options:",
-          "1. Type: <challenge-id> " + flag,
-          "2. Or use: challenge <id> to see challenge details first",
-          "",
-          "Recent challenges:",
-          ...challenges.slice(0, 5).map((c) => `  ${c.id} - ${c.name} (${c.points} pts)`),
-          "",
-          "Use 'challenges' to see all available challenges.",
-        ].join("\n")
-      }
-
-      // Check if input has challenge ID + flag
-      const flagWithIdMatch = input.match(/^(\w[\w-]*)\s+(editaCTF\{[^}]*\})$/)
-      if (flagWithIdMatch) {
-        const [, challengeId, flag] = flagWithIdMatch
-
-        // Verify the challenge exists
-        const challenge = challenges.find((c) => c.id === challengeId)
-        if (!challenge) {
-          return [
-            `❌ Challenge '${challengeId}' not found.`,
-            "",
-            "Available challenges:",
-            ...challenges.slice(0, 8).map((c) => `  ${c.id} - ${c.name}`),
-            "",
-            "Use 'challenges' to see all challenges.",
-          ].join("\n")
-        }
-
-        return await doSubmit(challengeId, flag)
-      }
-
-      return null
-    },
-    [doSubmit, challenges],
-  )
+  const doChallenge = useCallback(async (id?: string, opts?: { hint?: boolean; submit?: string }) => {
+    if (!id) return "challenge: missing challenge id"
+    
+    const bundle = await fetchChallengeBundle(id)
+    if (!bundle || !bundle.challenge) return `challenge: '${id}' not found`
+    
+    // Handle hint flag
+    if (opts?.hint) {
+      if (bundle.hint) return `Hint for ${id}: ${bundle.hint}`
+      return `No hint available for ${id}`
+    }
+    
+    // Handle submit flag
+    if (opts?.submit) {
+      return await doSubmit(id, opts.submit)
+    }
+    
+    // Default: show challenge details
+    const c = bundle.challenge
+    const lines = [
+      `ID: ${c.id}`,
+      `Name: ${c.name}`,
+      `Category: ${c.category}    Points: ${c.points}    Difficulty: ${c.difficulty}`,
+      "",
+      "Description:",
+      c.description,
+      "",
+      "Files:",
+      ...(c.files?.length ? c.files.map((f: string) => ` - ${f}`) : [" (none)"]),
+      "",
+      "Submit: challenge " + id + " --submit editaCTF{flag}",
+      "   or:  challenge " + id + " -s editaCTF{flag}",
+    ]
+    return lines.join("\n")
+  }, [fetchChallengeBundle, doSubmit])
 
   // Team management
   const doTeam = useCallback(
@@ -918,8 +861,10 @@ export default function Page() {
 
     if (["ls", "cd", "cat", "open"].includes(cmd)) {
       cands = getPathCandidates(currentArg)
-    } else if (["challenge", "hint"].includes(cmd)) {
+    } else if (cmd === "challenge") {
       cands = getChallengeCandidates(currentArg)
+    } else if (cmd === "help") {
+      cands = getCommandCandidates(currentArg)
     } else if (cmd === "team") {
       const sub = endsWithSpace ? "" : currentArg
       const subs = ["create", "join", "leave", "show"]
@@ -958,118 +903,39 @@ export default function Page() {
 
       let out = ""
       try {
-        // First check if it's a flag submission
-        const flagResult = await detectFlagSubmission(line)
-        if (flagResult) {
-          out = flagResult
-        } else {
-          switch (cmd) {
-            case "help":
-              if (args[0]) {
-                // Detailed help for specific commands
-                const cmd = args[0]
-                const helpDetails: Record<string, string> = {
-                  ls: "ls [path] - List directory contents. Use ls -la for detailed view.",
-                  cd: "cd [path] - Change directory. Use cd ~ or cd to go to root.",
-                  cat: "cat <file> - Display file contents. Works with .txt, .md, .json files.",
-                  team: "team create <name> <pass> | team join <name> <pass> | team leave",
-                  auth: "auth register <email> <pass> | auth login <email> <pass> | auth logout",
-                  profile:
-                    "profile show | profile name <display_name> - Set display name (required for flag submission)",
-                  challenges:
-                    "challenges [filter] [--compact] [--all] [--help] - List challenges as JSON. Filter by category/name/id. Use 'challenges --help' for examples.",
-                }
-                out = helpDetails[cmd] || `No detailed help available for '${cmd}'. Try 'help' for all commands.`
-              } else {
-                out = [
-                  "EditaCTF Terminal Commands:",
-                  "",
-                  "Navigation:  ls, cd, pwd, cat, open",
-                  "CTF:         challenges (see 'challenges --help'), challenge <id>, hint <id>",
-                  "Flags:       <challenge-id> editaCTF{flag} OR just editaCTF{flag}",
-                  "Info:        rules, leaderboard, teams",
-                  "Account:     auth register/login/logout, profile name/show",
-                  "Team:        team create/join/leave/show",
-                  "System:      clear, reload, export state, date, whoami",
-                  "",
-                  "Use 'help <command>' for detailed info. Tab for autocomplete.",
-                  "Flag format: <challenge-id> editaCTF{...} or just editaCTF{...}",
-                  "",
-                  session
-                    ? summary?.displayName
-                      ? isOnRealTeam
-                        ? "✅ Ready to compete on leaderboard!"
-                        : "⚠️  Create/join a team to appear on leaderboard"
-                      : "⚠️  Set display name: profile name <your_name>"
-                    : "⚠️  Login required: auth register/login",
-                ].join("\n")
-              }
-              break
-            case "clear":
-              setHistory([])
-              setPending(false)
-              return
-            case "ls":
-              out = doLs(args[0])
-              break
-            case "cd":
-              out = doCd(args[0])
-              break
-            case "pwd":
-              out = doPwd()
-              break
-            case "cat":
-              out = await doCat(args[0])
-              break
-            case "open":
-              out = await doOpen(args[0])
-              break
-            case "rules":
-              out = await doRules()
-              break
-            case "leaderboard":
-              out = await doLeaderboard(args[0])
-              break
-            case "teams":
-              out = await doTeams(args[0])
-              break
-            case "challenges":
-              out = doChallenges(args.join(" "))
-              break
-            case "challenge":
-              out = await doChallenge(args[0])
-              break
-            case "hint":
-              out = await doHint(args[0])
-              break
-            case "team":
-              out = await doTeam(args[0], args[1], args[2])
-              break
-            case "profile":
-              out = await doProfile(args[0], ...args.slice(1))
-              break
-            case "auth":
-              out = await doAuth(args[0] ?? "", args[1], args[2])
-              break
-            case "export":
-              if (args[0] === "state") out = doExport()
-              else out = "export: unknown target. Use 'export state'."
-              break
-            case "reload":
+        const cliContext: CliContext = {
+          doDate,
+          doLs,
+          doChallenge,
+            doChallenges: (opts) => {
+              const tokens: string[] = []
+              if (opts.filter) tokens.push(opts.filter)
+              if (opts.all) tokens.push("--all")
+              if (opts.compact) tokens.push("--compact")
+              if (opts.help) tokens.push("--help")
+              const arg = tokens.join(" ")
+              return doChallenges(tokens.length > 0 ? arg : undefined)
+            },
+            doClear,
+            doCd,
+            doCat,
+            doExport,
+            doPwd,
+            doWhoami: () => displayIdentity,
+            doOpen,
+            doRules,
+            doLeaderboard,
+            doTeams,
+            doReload: async () => {
               await reloadData()
               await fetchSummary()
-              out = "Reloaded CTF data."
-              break
-            case "date":
-              out = new Date().toString()
-              break
-            case "whoami":
-              out = displayIdentity
-              break
-            default:
-              out = `${cmd}: command not found`
+              return "Reloaded CTF data."
+            },
+            doTeam,
+            doProfile,
+            doAuth,
           }
-        }
+          out = await runCli(line, cliContext)
       } catch {
         out = "Error executing command."
       }
@@ -1081,7 +947,6 @@ export default function Page() {
     },
     [
       prompt,
-      detectFlagSubmission,
       doLs,
       doCd,
       doPwd,
@@ -1092,7 +957,8 @@ export default function Page() {
       doTeams,
       doChallenges,
       doChallenge,
-      doHint,
+      doClear,
+      doDate,
       doTeam,
       doProfile,
       doAuth,
