@@ -96,10 +96,8 @@ export default function Page() {
   // Cache for file contents: { [path]: content }
   const [fileCache, setFileCache] = useState<Record<string, string>>({})
   const [challenges, setChallenges] = useState<ChallengeMeta[]>([])
-  // Cache for full challenge details: { [id]: challengeDetail }
-  const [challengeCache, setChallengeCache] = useState<Record<string, any>>({})
-  // Cache for hints: { [id]: hint }
-  const [hintCache, setHintCache] = useState<Record<string, string>>({})
+  // Bundle cache for challenge details and hints: { [id]: { challenge, hint } }
+  const [challengeBundleCache, setChallengeBundleCache] = useState<Record<string, { challenge: any; hint: string | null }>>({})
   const termEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [cmdHistory, setCmdHistory] = useLocalStorage<string[]>("edita-ctf:cmd-history", [])
@@ -127,9 +125,8 @@ export default function Page() {
 
   const reloadData = useCallback(async () => {
     try {
-      // Invalidate challenge and hint caches on reload
-      setChallengeCache({})
-      setHintCache({})
+      // Invalidate challenge bundle cache on reload
+      setChallengeBundleCache({})
       const [fsRes, chRes] = await Promise.all([fetch("/api/fs"), fetch("/api/challenges")])
       const fsData = (await fsRes.json()) as FsNode
       const chData = (await chRes.json()) as { challenges: ChallengeMeta[] }
@@ -212,9 +209,8 @@ export default function Page() {
       .channel("live-leaderboard")
       .on("postgres_changes", { event: "*", schema: "public", table: "solves" }, () => {
         setHistory((h) => [...h, { type: "system", text: "Leaderboard updated (realtime)." }])
-        // Invalidate challenge and hint caches on live update
-        setChallengeCache({})
-        setHintCache({})
+        // Invalidate challenge bundle cache on live update
+        setChallengeBundleCache({})
         fetchSummary()
       })
       .subscribe()
@@ -526,30 +522,21 @@ export default function Page() {
     [challenges],
   )
 
+  // Unified fetch for challenge detail and hint
+  const fetchChallengeBundle = useCallback(async (challengeId: string, forceRefresh = false) => {
+    if (!forceRefresh && challengeBundleCache[challengeId]) return challengeBundleCache[challengeId]
+    const res = await fetch(`/api/challenges?id=${encodeURIComponent(challengeId)}`)
+    if (res.status === 404) return null
+    const data = await res.json()
+    setChallengeBundleCache((s) => ({ ...s, [challengeId]: { challenge: data.challenge, hint: data.hint ?? null } }))
+    return { challenge: data.challenge, hint: data.hint ?? null }
+  }, [challengeBundleCache])
+
   const doChallenge = useCallback(async (id?: string) => {
     if (!id) return "challenge: missing challenge id"
-    // Use cache if available
-    const fetchChallenge = async (challengeId: string, forceRefresh = false) => {
-      if (!forceRefresh && challengeCache[challengeId]) return challengeCache[challengeId]
-      const res = await fetch(`/api/challenges?id=${encodeURIComponent(challengeId)}`)
-      if (res.status === 404) return null
-      const data = await res.json()
-      const c = data.challenge as {
-        id: string
-        name: string
-        category: string
-        points: number
-        difficulty: string
-        description: string
-        files: string[]
-        daily?: boolean
-      }
-      setChallengeCache((s) => ({ ...s, [challengeId]: c }))
-      return c
-    }
-
-    const c = await fetchChallenge(id)
-    if (!c) return `challenge: '${id}' not found`
+    const bundle = await fetchChallengeBundle(id)
+    if (!bundle || !bundle.challenge) return `challenge: '${id}' not found`
+    const c = bundle.challenge
     const lines = [
       `ID: ${c.id}`,
       `Name: ${c.name}`,
@@ -564,19 +551,15 @@ export default function Page() {
       "Submit format: <challenge-id> editaCTF{...}",
     ]
     return lines.join("\n")
-  }, [challengeCache])
+  }, [fetchChallengeBundle])
 
   const doHint = useCallback(async (id?: string) => {
     if (!id) return "hint: missing challenge id"
-    // Use hint cache if available
-    if (hintCache[id]) return `Hint for ${id}: ${hintCache[id]}`
-    const res = await fetch(`/api/challenges?hint=${encodeURIComponent(id)}`)
-    if (res.status === 404) return `hint: '${id}' not found`
-    const data = await res.json()
-    const hint = data.hint as string
-    setHintCache((s) => ({ ...s, [id]: hint }))
-    return `Hint for ${id}: ${hint}`
-  }, [hintCache])
+    const bundle = await fetchChallengeBundle(id)
+    if (!bundle) return `hint: '${id}' not found`
+    if (bundle.hint) return `Hint for ${id}: ${bundle.hint}`
+    return `No hint available for ${id}`
+  }, [fetchChallengeBundle])
 
   const doSubmit = useCallback(
     async (id?: string, flag?: string) => {
