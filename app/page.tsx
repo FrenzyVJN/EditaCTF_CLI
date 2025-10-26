@@ -96,6 +96,10 @@ export default function Page() {
   // Cache for file contents: { [path]: content }
   const [fileCache, setFileCache] = useState<Record<string, string>>({})
   const [challenges, setChallenges] = useState<ChallengeMeta[]>([])
+  // Cache for full challenge details: { [id]: challengeDetail }
+  const [challengeCache, setChallengeCache] = useState<Record<string, any>>({})
+  // Cache for hints: { [id]: hint }
+  const [hintCache, setHintCache] = useState<Record<string, string>>({})
   const termEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [cmdHistory, setCmdHistory] = useLocalStorage<string[]>("edita-ctf:cmd-history", [])
@@ -123,6 +127,9 @@ export default function Page() {
 
   const reloadData = useCallback(async () => {
     try {
+      // Invalidate challenge and hint caches on reload
+      setChallengeCache({})
+      setHintCache({})
       const [fsRes, chRes] = await Promise.all([fetch("/api/fs"), fetch("/api/challenges")])
       const fsData = (await fsRes.json()) as FsNode
       const chData = (await chRes.json()) as { challenges: ChallengeMeta[] }
@@ -205,6 +212,9 @@ export default function Page() {
       .channel("live-leaderboard")
       .on("postgres_changes", { event: "*", schema: "public", table: "solves" }, () => {
         setHistory((h) => [...h, { type: "system", text: "Leaderboard updated (realtime)." }])
+        // Invalidate challenge and hint caches on live update
+        setChallengeCache({})
+        setHintCache({})
         fetchSummary()
       })
       .subscribe()
@@ -518,19 +528,28 @@ export default function Page() {
 
   const doChallenge = useCallback(async (id?: string) => {
     if (!id) return "challenge: missing challenge id"
-    const res = await fetch(`/api/challenges?id=${encodeURIComponent(id)}`)
-    if (res.status === 404) return `challenge: '${id}' not found`
-    const data = await res.json()
-    const c = data.challenge as {
-      id: string
-      name: string
-      category: string
-      points: number
-      difficulty: string
-      description: string
-      files: string[]
-      daily?: boolean
+    // Use cache if available
+    const fetchChallenge = async (challengeId: string, forceRefresh = false) => {
+      if (!forceRefresh && challengeCache[challengeId]) return challengeCache[challengeId]
+      const res = await fetch(`/api/challenges?id=${encodeURIComponent(challengeId)}`)
+      if (res.status === 404) return null
+      const data = await res.json()
+      const c = data.challenge as {
+        id: string
+        name: string
+        category: string
+        points: number
+        difficulty: string
+        description: string
+        files: string[]
+        daily?: boolean
+      }
+      setChallengeCache((s) => ({ ...s, [challengeId]: c }))
+      return c
     }
+
+    const c = await fetchChallenge(id)
+    if (!c) return `challenge: '${id}' not found`
     const lines = [
       `ID: ${c.id}`,
       `Name: ${c.name}`,
@@ -545,16 +564,19 @@ export default function Page() {
       "Submit format: <challenge-id> editaCTF{...}",
     ]
     return lines.join("\n")
-  }, [])
+  }, [challengeCache])
 
   const doHint = useCallback(async (id?: string) => {
     if (!id) return "hint: missing challenge id"
+    // Use hint cache if available
+    if (hintCache[id]) return `Hint for ${id}: ${hintCache[id]}`
     const res = await fetch(`/api/challenges?hint=${encodeURIComponent(id)}`)
     if (res.status === 404) return `hint: '${id}' not found`
     const data = await res.json()
     const hint = data.hint as string
+    setHintCache((s) => ({ ...s, [id]: hint }))
     return `Hint for ${id}: ${hint}`
-  }, [])
+  }, [hintCache])
 
   const doSubmit = useCallback(
     async (id?: string, flag?: string) => {
