@@ -91,6 +91,7 @@ export default function Page() {
 
   const [history, setHistory] = useState<TerminalLine[]>([{ type: "system", text: WELCOME }])
   const [input, setInput] = useState("")
+  const [pending, setPending] = useState(false)
   const [cwd, setCwd] = useLocalStorage<string[]>("edita-ctf:cwd", [])
   const [fsRoot, setFsRoot] = useState<FsNode | null>(null)
   // Cache for file contents: { [path]: content }
@@ -938,6 +939,7 @@ export default function Page() {
     async (raw: string) => {
       const line = raw.trim()
       if (!line) return
+      setPending(true)
       const parts = line.split(" ").filter(Boolean)
       const cmd = parts[0]
       const args = parts.slice(1)
@@ -1000,6 +1002,7 @@ export default function Page() {
               break
             case "clear":
               setHistory([])
+              setPending(false)
               return
             case "ls":
               out = doLs(args[0])
@@ -1069,6 +1072,7 @@ export default function Page() {
       if (out) {
         setHistory((h) => [...h, { type: "output", text: out }])
       }
+      setPending(false)
     },
     [
       prompt,
@@ -1171,19 +1175,25 @@ export default function Page() {
                 </div>
               )
             })}
-            <div className="flex items-center gap-2">
-              <span className="text-emerald-400">{prompt}</span>
-              <input
-                ref={inputRef}
-                aria-label="Terminal input"
-                className="flex-1 bg-transparent outline-none border-none text-emerald-100 placeholder:text-emerald-700 caret-emerald-400"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="type a command or paste editaCTF{flag}"
-                autoFocus
-              />
-            </div>
+            {!pending ? (
+              <div className="flex items-center gap-2">
+                <span className="text-emerald-400">{prompt}</span>
+                <input
+                  ref={inputRef}
+                  aria-label="Terminal input"
+                  className="flex-1 bg-transparent outline-none border-none text-emerald-100 placeholder:text-emerald-700 caret-emerald-400"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="type a command or paste editaCTF{flag}"
+                  autoFocus
+                />
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-emerald-600 animate-pulse">...</span>
+              </div>
+            )}
             <div ref={termEndRef} />
           </section>
           <footer className="border-t border-emerald-800 px-3 py-2 text-[11px] text-emerald-600">
