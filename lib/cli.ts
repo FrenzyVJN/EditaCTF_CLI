@@ -8,7 +8,7 @@ export type CliContext = {
   doDate?: () => string;
   doLs: (target?: string) => string;
   doChallenge?: (id?: string, opts?: { hint?: boolean; submit?: string }) => Promise<string>;
-  doChallenges?: (opts: { filter?: string; compact?: boolean; all?: boolean; help?: boolean }) => string;
+  doChallenges?: (opts: { filter?: string; all?: boolean; help?: boolean; json?: boolean }) => string;
   doClear?: () => string;
   doCd?: (target?: string) => string;
   doCat?: (target?: string, opts?: { refresh?: boolean }) => Promise<string>;
@@ -58,7 +58,7 @@ const makeChallengeCommand: CommandFactory = function(ctx) {
     name: 'challenge',
     description: 'Interact with challenges (get, submit, hint)',
     args: {
-        hint: flag({ long: 'hint', short: 'i', description: 'Request a hint for the challenge' }),
+        hint: flag({ long: 'hint', short: 'h', description: 'Request a hint for the challenge' }),
         submit: option({ type: string, long: 'submit', short: 's', description: 'Submit a flag for the challenge' }),
         id: positional({ type: string, description: 'Challenge ID', displayName: 'id' }),
     },
@@ -72,19 +72,19 @@ const makeChallengeCommand: CommandFactory = function(ctx) {
 const makeChallengesCommand: CommandFactory = function(ctx) {
   return command({
     name: 'challenges',
-    description: 'List challenges as JSON. Filter by category/name/id.',
+    description: 'List challenges in table format. Filter by category/name/id.',
     args: {
       filter: option({ type: string, long: 'filter', short: 'f', description: 'Filter by category/id/name', defaultValue: () => '' }),
-      compact: flag({ long: 'compact', description: 'Minify JSON output' }),
       all: flag({ long: 'all', description: 'List all challenges' }),
+      json: flag({ long: 'json', description: 'Output as minified JSON' }),
       help: flag({ long: 'help', description: 'Show help text' }),
     },
     handler: function(args) {
-      if (!ctx.doChallenges) return '{}';
+      if (!ctx.doChallenges) return 'No challenges available.';
       return ctx.doChallenges({
         filter: args.filter,
-        compact: args.compact,
         all: args.all,
+        json: args.json,
         help: args.help,
       });
     },
@@ -218,7 +218,7 @@ const makeLeaderboardCommand: CommandFactory = function(ctx) {
     name: 'leaderboard',
     description: 'Show leaderboard rankings',
     args: {
-      json: flag({ long: 'json', description: 'Output as JSON' }),
+      json: flag({ long: 'json', description: 'Output as minified JSON' }),
     },
     handler: async function(args: { json: boolean }) {
       if (!ctx.doLeaderboard) return 'leaderboard: not implemented';
@@ -232,7 +232,7 @@ const makeTeamsCommand: CommandFactory = function(ctx) {
     name: 'teams',
     description: 'List all teams',
     args: {
-      json: flag({ long: 'json', description: 'Output as JSON' }),
+      json: flag({ long: 'json', description: 'Output as minified JSON' }),
     },
     handler: async function(args: { json: boolean }) {
       if (!ctx.doTeams) return 'teams: not implemented';
@@ -530,8 +530,8 @@ export async function runCli(raw: string, ctx: CliContext): Promise<string> {
   } else if (cmdName === 'challenges') {
     argObj = {
       filter: args.find((a) => !a.startsWith('--')) || '',
-      compact: args.includes('--compact'),
       all: args.includes('--all'),
+      json: args.includes('--json'),
       help: args.includes('--help'),
     };
   } else if (cmdName === 'pwd') {
@@ -543,9 +543,13 @@ export async function runCli(raw: string, ctx: CliContext): Promise<string> {
   } else if (cmdName === 'rules') {
     argObj = {};
   } else if (cmdName === 'leaderboard') {
-    argObj = { json: args.includes('--json') };
+    argObj = {
+      json: args.includes('--json'),
+    };
   } else if (cmdName === 'teams') {
-    argObj = { json: args.includes('--json') };
+    argObj = {
+      json: args.includes('--json'),
+    };
   } else if (cmdName === 'reload') {
     argObj = {};
   } else if (cmdName === 'team') {

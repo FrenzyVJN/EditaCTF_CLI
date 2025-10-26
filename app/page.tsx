@@ -5,11 +5,21 @@ import type React from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getSupabaseClient } from "@/lib/supabase/client"
 import { runCli, type CliContext, COMMANDS } from "@/lib/cli"
+import { table } from "table"
 
 import type { FsNode, ChallengeMeta, LeaderboardRow, TeamsRow, TerminalLine } from "@/app/types"
 
 const WELCOME = ["Welcome to EditaCTF!", "Type 'help' to see available commands.", ""].join("\n")
 const DEFAULT_HOST = "EditaCTF"
+
+// Helper function to create tabulated output
+function createTable(headers: string[], rows: string[][]): string {
+  const data = [headers, ...rows]
+  
+  return table(data, {
+    columns: headers.map(() => ({ alignment: 'left' }))
+  })
+}
 
 function joinPath(parts: string[]): string {
   const path = "/" + parts.filter(Boolean).join("/")
@@ -390,8 +400,10 @@ export default function Page() {
   const doLeaderboard = useCallback(async (format?: string) => {
     const res = await fetch("/api/leaderboard")
     const data = (await res.json()) as { leaderboard: LeaderboardRow[]; updatedAt: string }
-    if (format === "--json") {
-      return JSON.stringify(data, null, 2)
+
+    // Check for --json flag
+    if (format?.includes("--json")) {
+      return JSON.stringify(data)
     }
 
     if (data.leaderboard.length === 0) {
@@ -407,25 +419,26 @@ export default function Page() {
       ].join("\n")
     }
 
-    const lines = [
-      "Rank  Team                  Score   Solves",
-      "----- -------------------- ------- ------",
-      ...data.leaderboard.map((r) => {
-        const team = r.team.padEnd(20, " ").slice(0, 20)
-        const score = String(r.score).padStart(5, " ")
-        const solves = String(r.solves).padStart(4, " ")
-        return `${String(r.rank).padEnd(5, " ")} ${team} ${score}   ${solves}`
-      }),
-      "",
-      `Updated: ${data.updatedAt}`,
-    ]
-    return lines.join("\n")
+    const headers = ["Rank", "Team", "Score", "Solves"]
+    const rows = data.leaderboard.map((r) => [
+      String(r.rank),
+      r.team,
+      String(r.score),
+      String(r.solves)
+    ])
+
+    const output = createTable(headers, rows)
+    return output + `\n\nUpdated: ${data.updatedAt}`
   }, [])
 
   const doTeams = useCallback(async (format?: string) => {
     const res = await fetch("/api/teams")
     const data = (await res.json()) as { teams: TeamsRow[]; updatedAt: string }
-    if (format === "--json") return JSON.stringify(data, null, 2)
+
+    // Check for --json flag
+    if (format?.includes("--json")) {
+      return JSON.stringify(data)
+    }
 
     if (data.teams.length === 0) {
       return [
@@ -438,57 +451,32 @@ export default function Page() {
       ].join("\n")
     }
 
-    const lines = [
-      "Team                 Members  Score",
-      "-------------------- ------- ------",
-      ...data.teams.map((t) => {
-        const name = t.name.padEnd(20, " ").slice(0, 20)
-        const members = String(t.members).padStart(5, " ")
-        const score = String(t.score).padStart(5, " ")
-        return `${name}   ${members}   ${score}`
-      }),
-      "",
-      `Updated: ${data.updatedAt}`,
-    ]
-    return lines.join("\n")
+    const headers = ["Team", "Members", "Score"]
+    const rows = data.teams.map((t) => [
+      t.name,
+      String(t.members),
+      String(t.score)
+    ])
+
+    const output = createTable(headers, rows)
+    return output + `\n\nUpdated: ${data.updatedAt}`
   }, [])
 
   const doChallenges = useCallback(
     (arg?: string) => {
-      if (!challenges || challenges.length === 0) return "{}"
-      if (arg && arg.includes("--help")) {
-        return [
-          "Usage: challenges [filter] [--compact] [--all] [--help]",
-          "",
-          "Lists challenges as JSON. Fields: count, challenges[], filter.",
-          "",
-          "Arguments:",
-          "  filter      First non-flag token; matches category, id, or name substring (case-insensitive).",
-          "",
-          "Flags:",
-          "  --compact   Minify JSON output (no pretty formatting).",
-          "  --all       Ignore any filter token and list all challenges.",
-          "  --help      Show this help text.",
-          "",
-          "Examples:",
-          "  challenges                   # list all (pretty JSON)",
-          "  challenges web               # filter by 'web' in category/id/name",
-          "  challenges WEB --compact     # filter (case-insensitive) and minify JSON",
-          "  challenges --all --compact   # full list, compact JSON",
-          "  challenges --help            # this help",
-        ].join("\n")
-      }
-      // Pretty by default; user can request compact via --compact
+      if (!challenges || challenges.length === 0) return "No challenges available."
+      
       let filter: string | undefined = undefined
-      let pretty = true
+      let outputJson = false
       if (arg && arg.trim().length > 0) {
         const parts = arg.split(/\s+/).filter(Boolean)
         const flagSet = new Set(parts.filter((p) => p.startsWith("--")))
-        if (flagSet.has("--compact")) pretty = false
         const nonFlags = parts.filter((p) => !p.startsWith("--"))
         if (nonFlags.length > 0) filter = nonFlags[0]
         if (flagSet.has("--all")) filter = undefined
+        if (flagSet.has("--json")) outputJson = true
       }
+      
       let list = challenges
       if (filter) {
         const f = filter.toLowerCase()
@@ -497,19 +485,32 @@ export default function Page() {
             c.category.toLowerCase().includes(f) || c.id.toLowerCase().includes(f) || c.name.toLowerCase().includes(f),
         )
       }
-      const payload = {
-        count: list.length,
-        challenges: list.map((c) => ({
-          id: c.id,
-          name: c.name,
-          category: c.category,
-          points: c.points,
-          difficulty: c.difficulty,
-          daily: !!c.daily,
-        })),
-        filter: filter || null,
+      
+      if (list.length === 0) {
+        return `No challenges found matching '${filter}'.`
       }
-      return JSON.stringify(payload, null, pretty ? 2 : 0)
+
+      // Output as JSON if requested
+      if (outputJson) {
+        return JSON.stringify({ challenges: list, total: list.length })
+      }
+      
+      const headers = ["ID", "Name", "Category", "Points", "Difficulty", "Daily"]
+      const rows = list.map((c) => [
+        c.id,
+        c.name,
+        c.category,
+        String(c.points),
+        c.difficulty,
+        c.daily ? "yes" : "no"
+      ])
+      
+      const output = createTable(headers, rows)
+      const summary = filter 
+        ? `\nShowing ${list.length} challenge(s) matching '${filter}'`
+        : `\nTotal: ${list.length} challenge(s)`
+      
+      return output + summary
     },
     [challenges],
   )
@@ -781,16 +782,25 @@ export default function Page() {
   )
 
   const doExport = useCallback(() => {
-    const payload = session
-      ? {
-          team: summary?.team ?? null,
-          teamScore: summary?.teamScore ?? 0,
-          user: session.user_email,
-          displayName: summary?.displayName ?? null,
-          teamSolved: summary?.teamSolvedIds ?? [],
-        }
-      : { team: "guest", score: localScore, solved: localSolved, user: null }
-    return JSON.stringify(payload, null, 2)
+    if (session) {
+      const headers = ["Field", "Value"]
+      const rows = [
+        ["User", session.user_email],
+        ["Display Name", summary?.displayName ?? "(none)"],
+        ["Team", summary?.team ?? "guest"],
+        ["Team Score", String(summary?.teamScore ?? 0)],
+        ["Team Solves", String(summary?.teamSolvedIds?.length ?? 0)],
+      ]
+      return createTable(headers, rows)
+    } else {
+      const headers = ["Field", "Value"]
+      const rows = [
+        ["User", "guest"],
+        ["Score", String(localScore)],
+        ["Solves", String(localSolved.length)],
+      ]
+      return createTable(headers, rows)
+    }
   }, [session, summary, localScore, localSolved])
 
   // Autocomplete helpers
@@ -945,7 +955,7 @@ export default function Page() {
               const tokens: string[] = []
               if (opts.filter) tokens.push(opts.filter)
               if (opts.all) tokens.push("--all")
-              if (opts.compact) tokens.push("--compact")
+              if (opts.json) tokens.push("--json")
               if (opts.help) tokens.push("--help")
               const arg = tokens.join(" ")
               return doChallenges(tokens.length > 0 ? arg : undefined)
@@ -1071,10 +1081,13 @@ export default function Page() {
           >
             {history.map((line, i) => {
               const isHtml = /<span|&nbsp;/.test(line.text)
+              const isTable = /[┌┐└┘├┤┬┴┼─│]/.test(line.text)
               return (
                 <div key={i} className={line.type === "input" ? "text-emerald-300" : "text-emerald-200"}>
                   {isHtml ? (
                     <div dangerouslySetInnerHTML={{ __html: line.text }} />
+                  ) : isTable ? (
+                    <pre className="font-mono whitespace-pre">{line.text}</pre>
                   ) : (
                     line.text.split("\n").map((t, idx) => <div key={idx}>{t || "\u00A0"}</div>)
                   )}
