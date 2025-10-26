@@ -103,6 +103,11 @@ export default function Page() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [cmdHistory, setCmdHistory] = useLocalStorage<string[]>("edita-ctf:cmd-history", [])
   const [cmdIndex, setCmdIndex] = useState<number>(-1)
+  // Prevent hydration mismatch: only render terminal after client loads
+  const [clientReady, setClientReady] = useState(false)
+  useEffect(() => {
+    setClientReady(true)
+  }, [])
 
   // Auth state
   const [session, setSession] = useState<{
@@ -1134,6 +1139,7 @@ export default function Page() {
     }
   }
 
+  if (!clientReady) return null
   return (
     <main className="min-h-[100dvh] bg-black text-emerald-200">
       <div className="mx-auto max-w-5xl px-4 py-6 md:py-8">
