@@ -4,27 +4,29 @@ import { createServerSupabase } from "@/lib/supabase/server"
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
-  const id = searchParams.get("id")
-  const hintId = searchParams.get("hint")
+  const id = searchParams.get("id") || searchParams.get("hint")
 
   const supabase = createServerSupabase()
 
   if (id) {
-    const { data, error } = await supabase
-      .from("challenges")
-      .select("id,name,category,points,difficulty,description,daily,files")
-      .eq("id", id)
-      .single()
-    if (error || !data) return new NextResponse("Not found", { status: 404 })
-    return NextResponse.json({ challenge: data })
+    const [{ data: challenge, error: challengeError }, { data: hintData, error: hintError }] = await Promise.all([
+      supabase
+        .from("challenges")
+        .select("id,name,category,points,difficulty,description,daily,files")
+        .eq("id", id)
+        .single(),
+      supabase
+        .from("challenges")
+        .select("hint")
+        .eq("id", id)
+        .single(),
+    ])
+    if (challengeError || !challenge) return new NextResponse("Not found", { status: 404 })
+    // hintData may be null if not present
+    return NextResponse.json({ challenge, hint: hintData?.hint ?? null })
   }
 
-  if (hintId) {
-    const { data, error } = await supabase.from("challenges").select("hint").eq("id", hintId).single()
-    if (error || !data) return new NextResponse("Not found", { status: 404 })
-    return NextResponse.json({ hint: data.hint })
-  }
-
+  // List all challenges (no hint)
   const { data, error } = await supabase
     .from("challenges")
     .select("id,name,category,points,difficulty,daily")

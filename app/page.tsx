@@ -4,34 +4,22 @@ import type React from "react"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getSupabaseClient } from "@/lib/supabase/client"
+import { runCli, type CliContext, COMMANDS } from "@/lib/cli"
+import { table } from "table"
 
 import type { FsNode, ChallengeMeta, LeaderboardRow, TeamsRow, TerminalLine } from "@/app/types"
 
 const WELCOME = ["Welcome to EditaCTF!", "Type 'help' to see available commands.", ""].join("\n")
 const DEFAULT_HOST = "EditaCTF"
 
-const COMMANDS = [
-  "help",
-  "clear",
-  "ls",
-  "cd",
-  "pwd",
-  "cat",
-  "open",
-  "rules",
-  "leaderboard",
-  "teams",
-  "challenges",
-  "challenge",
-  "hint",
-  "team",
-  "profile",
-  "auth",
-  "export",
-  "date",
-  "whoami",
-  "reload",
-]
+// Helper function to create tabulated output
+function createTable(headers: string[], rows: string[][]): string {
+  const data = [headers, ...rows]
+  
+  return table(data, {
+    columns: headers.map(() => ({ alignment: 'left' }))
+  })
+}
 
 function joinPath(parts: string[]): string {
   const path = "/" + parts.filter(Boolean).join("/")
@@ -91,13 +79,23 @@ export default function Page() {
 
   const [history, setHistory] = useState<TerminalLine[]>([{ type: "system", text: WELCOME }])
   const [input, setInput] = useState("")
+  const [pending, setPending] = useState(false)
   const [cwd, setCwd] = useLocalStorage<string[]>("edita-ctf:cwd", [])
   const [fsRoot, setFsRoot] = useState<FsNode | null>(null)
+  // Cache for file contents: { [path]: content }
+  const [fileCache, setFileCache] = useState<Record<string, string>>({})
   const [challenges, setChallenges] = useState<ChallengeMeta[]>([])
+  // Bundle cache for challenge details and hints: { [id]: { challenge, hint } }
+  const [challengeBundleCache, setChallengeBundleCache] = useState<Record<string, { challenge: any; hint: string | null }>>({})
   const termEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [cmdHistory, setCmdHistory] = useLocalStorage<string[]>("edita-ctf:cmd-history", [])
   const [cmdIndex, setCmdIndex] = useState<number>(-1)
+  // Prevent hydration mismatch: only render terminal after client loads
+  const [clientReady, setClientReady] = useState(false)
+  useEffect(() => {
+    setClientReady(true)
+  }, [])
 
   // Auth state
   const [session, setSession] = useState<{
@@ -121,6 +119,8 @@ export default function Page() {
 
   const reloadData = useCallback(async () => {
     try {
+      // Invalidate challenge bundle cache on reload
+      setChallengeBundleCache({})
       const [fsRes, chRes] = await Promise.all([fetch("/api/fs"), fetch("/api/challenges")])
       const fsData = (await fsRes.json()) as FsNode
       const chData = (await chRes.json()) as { challenges: ChallengeMeta[] }
@@ -152,6 +152,7 @@ export default function Page() {
     }
   }, [session?.access_token])
 
+  // Load initial data on mount
   useEffect(() => {
     reloadData()
   }, [reloadData])
@@ -203,6 +204,8 @@ export default function Page() {
       .channel("live-leaderboard")
       .on("postgres_changes", { event: "*", schema: "public", table: "solves" }, () => {
         setHistory((h) => [...h, { type: "system", text: "Leaderboard updated (realtime)." }])
+        // Invalidate challenge bundle cache on live update
+        setChallengeBundleCache({})
         fetchSummary()
       })
       .subscribe()
@@ -300,23 +303,64 @@ export default function Page() {
     [fsRoot, resolvePath],
   )
 
-  const fetchFileContent = useCallback(async (node: FsNode): Promise<string> => {
-    if (node.content) return node.content
+  // Lazy fetch and cache file content
+  const fetchFileContent = useCallback(async (node: FsNode, forceRefresh = false): Promise<string> => {
+    if (!node.path) return `cat: ${node.name}: Invalid path`
+    // Use cache unless forceRefresh
+    if (!forceRefresh && fileCache[node.path]) return fileCache[node.path]
+
+    // Client-side generation for README.md in /challenges/*/*
+    if (node.name === "README.md" && node.path.startsWith("/challenges/")) {
+      const parts = node.path.split("/")
+      const category = parts[2]
+      const id = parts[3]
+      const challenge = challenges.find((c) => c.id === id && c.category === category)
+      if (challenge) {
+        const content = [
+          `# ${challenge.name}`,
+          ``,
+          `ID: ${challenge.id}`,
+          `Category: ${challenge.category}`,
+          `Points: ${challenge.points}`,
+          `Difficulty: ${challenge.difficulty}`,
+          `Daily: ${challenge.daily ? "yes" : "no"}`,
+          ``,
+          `Use 'challenge ${challenge.id}' to view full details and files.`,
+          `Use 'challenge ${challenge.id} -i' to reveal a hint.`,
+          `Submit with: challenge ${challenge.id} -s editaCTF{your_flag_here}`,
+        ].join("\n")
+        setFileCache((cache) => ({ ...cache, [node.path]: content }))
+        return content
+      }
+    }
+
+    // Prefer API fetch for all other files
+    const res = await fetch(`/api/fs?path=${encodeURIComponent(node.path)}`)
+    if (!res.ok) return `cat: ${node.name}: Failed to fetch content`
+    const data = await res.json()
+    if (typeof data.content === "string") {
+      setFileCache((cache) => ({ ...cache, [node.path]: data.content }))
+      return data.content
+    }
+    // If no content, fallback to sourceUrl if present
     if (node.sourceUrl) {
-      const res = await fetch(node.sourceUrl)
+      const res2 = await fetch(node.sourceUrl)
       const isText = node.mime?.startsWith("text/") || node.sourceUrl.endsWith(".txt") || node.sourceUrl.endsWith(".md")
       if (isText) {
-        const txt = await res.text()
+        const txt = await res2.text()
+        setFileCache((cache) => ({ ...cache, [node.path]: txt }))
         return txt
       }
-      const json = await res.json()
-      return JSON.stringify(json, null, 2)
+      const json = await res2.json()
+      const txt = JSON.stringify(json, null, 2)
+      setFileCache((cache) => ({ ...cache, [node.path]: txt }))
+      return txt
     }
     return `cat: ${node.name}: No content`
-  }, [])
+  }, [fileCache, challenges])
 
   const doCat = useCallback(
-    async (target?: string) => {
+    async (target?: string, opts?: { refresh?: boolean }) => {
       if (!target) return "cat: missing file operand"
       if (!fsRoot) return "Filesystem not loaded."
       const path = resolvePath(target)
@@ -324,7 +368,7 @@ export default function Page() {
       if (!node) return `cat: ${target}: No such file or directory`
       if (node.type !== "file") return `cat: ${target}: Is a directory`
       try {
-        const txt = await fetchFileContent(node)
+        const txt = await fetchFileContent(node, opts?.refresh)
         return txt
       } catch {
         return `cat: ${target}: Failed to read file`
@@ -332,6 +376,16 @@ export default function Page() {
     },
     [fsRoot, resolvePath, fetchFileContent],
   )
+  // Example: add a command to refresh file content (live update)
+  // Usage: cat <file> --refresh
+  // Already supported via doCat(target, { refresh: true })
+
+  const doClear = useCallback(() => {
+    setHistory([])
+    return ""
+  }, [])
+
+  const doDate = useCallback(() => new Date().toString(), [])
 
   const doOpen = useCallback(async (target?: string) => doCat(target), [doCat])
 
@@ -346,8 +400,10 @@ export default function Page() {
   const doLeaderboard = useCallback(async (format?: string) => {
     const res = await fetch("/api/leaderboard")
     const data = (await res.json()) as { leaderboard: LeaderboardRow[]; updatedAt: string }
-    if (format === "--json") {
-      return JSON.stringify(data, null, 2)
+
+    // Check for --json flag
+    if (format?.includes("--json")) {
+      return JSON.stringify(data)
     }
 
     if (data.leaderboard.length === 0) {
@@ -363,25 +419,26 @@ export default function Page() {
       ].join("\n")
     }
 
-    const lines = [
-      "Rank  Team                  Score   Solves",
-      "----- -------------------- ------- ------",
-      ...data.leaderboard.map((r) => {
-        const team = r.team.padEnd(20, " ").slice(0, 20)
-        const score = String(r.score).padStart(5, " ")
-        const solves = String(r.solves).padStart(4, " ")
-        return `${String(r.rank).padEnd(5, " ")} ${team} ${score}   ${solves}`
-      }),
-      "",
-      `Updated: ${data.updatedAt}`,
-    ]
-    return lines.join("\n")
+    const headers = ["Rank", "Team", "Score", "Solves"]
+    const rows = data.leaderboard.map((r) => [
+      String(r.rank),
+      r.team,
+      String(r.score),
+      String(r.solves)
+    ])
+
+    const output = createTable(headers, rows)
+    return output + `\n\nUpdated: ${data.updatedAt}`
   }, [])
 
   const doTeams = useCallback(async (format?: string) => {
     const res = await fetch("/api/teams")
     const data = (await res.json()) as { teams: TeamsRow[]; updatedAt: string }
-    if (format === "--json") return JSON.stringify(data, null, 2)
+
+    // Check for --json flag
+    if (format?.includes("--json")) {
+      return JSON.stringify(data)
+    }
 
     if (data.teams.length === 0) {
       return [
@@ -394,57 +451,32 @@ export default function Page() {
       ].join("\n")
     }
 
-    const lines = [
-      "Team                 Members  Score",
-      "-------------------- ------- ------",
-      ...data.teams.map((t) => {
-        const name = t.name.padEnd(20, " ").slice(0, 20)
-        const members = String(t.members).padStart(5, " ")
-        const score = String(t.score).padStart(5, " ")
-        return `${name}   ${members}   ${score}`
-      }),
-      "",
-      `Updated: ${data.updatedAt}`,
-    ]
-    return lines.join("\n")
+    const headers = ["Team", "Members", "Score"]
+    const rows = data.teams.map((t) => [
+      t.name,
+      String(t.members),
+      String(t.score)
+    ])
+
+    const output = createTable(headers, rows)
+    return output + `\n\nUpdated: ${data.updatedAt}`
   }, [])
 
   const doChallenges = useCallback(
     (arg?: string) => {
-      if (!challenges || challenges.length === 0) return "{}"
-      if (arg && arg.includes("--help")) {
-        return [
-          "Usage: challenges [filter] [--compact] [--all] [--help]",
-          "",
-          "Lists challenges as JSON. Fields: count, challenges[], filter.",
-          "",
-          "Arguments:",
-          "  filter      First non-flag token; matches category, id, or name substring (case-insensitive).",
-          "",
-          "Flags:",
-          "  --compact   Minify JSON output (no pretty formatting).",
-          "  --all       Ignore any filter token and list all challenges.",
-          "  --help      Show this help text.",
-          "",
-          "Examples:",
-          "  challenges                   # list all (pretty JSON)",
-          "  challenges web               # filter by 'web' in category/id/name",
-          "  challenges WEB --compact     # filter (case-insensitive) and minify JSON",
-          "  challenges --all --compact   # full list, compact JSON",
-          "  challenges --help            # this help",
-        ].join("\n")
-      }
-      // Pretty by default; user can request compact via --compact
+      if (!challenges || challenges.length === 0) return "No challenges available."
+      
       let filter: string | undefined = undefined
-      let pretty = true
+      let outputJson = false
       if (arg && arg.trim().length > 0) {
         const parts = arg.split(/\s+/).filter(Boolean)
         const flagSet = new Set(parts.filter((p) => p.startsWith("--")))
-        if (flagSet.has("--compact")) pretty = false
         const nonFlags = parts.filter((p) => !p.startsWith("--"))
         if (nonFlags.length > 0) filter = nonFlags[0]
         if (flagSet.has("--all")) filter = undefined
+        if (flagSet.has("--json")) outputJson = true
       }
+      
       let list = challenges
       if (filter) {
         const f = filter.toLowerCase()
@@ -453,62 +485,45 @@ export default function Page() {
             c.category.toLowerCase().includes(f) || c.id.toLowerCase().includes(f) || c.name.toLowerCase().includes(f),
         )
       }
-      const payload = {
-        count: list.length,
-        challenges: list.map((c) => ({
-          id: c.id,
-          name: c.name,
-          category: c.category,
-          points: c.points,
-          difficulty: c.difficulty,
-          daily: !!c.daily,
-        })),
-        filter: filter || null,
+      
+      if (list.length === 0) {
+        return `No challenges found matching '${filter}'.`
       }
-      return JSON.stringify(payload, null, pretty ? 2 : 0)
+
+      // Output as JSON if requested
+      if (outputJson) {
+        return JSON.stringify({ challenges: list, total: list.length })
+      }
+      
+      const headers = ["ID", "Name", "Category", "Points", "Difficulty", "Daily"]
+      const rows = list.map((c) => [
+        c.id,
+        c.name,
+        c.category,
+        String(c.points),
+        c.difficulty,
+        c.daily ? "yes" : "no"
+      ])
+      
+      const output = createTable(headers, rows)
+      const summary = filter 
+        ? `\nShowing ${list.length} challenge(s) matching '${filter}'`
+        : `\nTotal: ${list.length} challenge(s)`
+      
+      return output + summary
     },
     [challenges],
   )
 
-  const doChallenge = useCallback(async (id?: string) => {
-    if (!id) return "challenge: missing challenge id"
-    const res = await fetch(`/api/challenges?id=${encodeURIComponent(id)}`)
-    if (res.status === 404) return `challenge: '${id}' not found`
+  // Unified fetch for challenge detail and hint
+  const fetchChallengeBundle = useCallback(async (challengeId: string, forceRefresh = false) => {
+    if (!forceRefresh && challengeBundleCache[challengeId]) return challengeBundleCache[challengeId]
+    const res = await fetch(`/api/challenges?id=${encodeURIComponent(challengeId)}`)
+    if (res.status === 404) return null
     const data = await res.json()
-    const c = data.challenge as {
-      id: string
-      name: string
-      category: string
-      points: number
-      difficulty: string
-      description: string
-      files: string[]
-      daily?: boolean
-    }
-    const lines = [
-      `ID: ${c.id}`,
-      `Name: ${c.name}`,
-      `Category: ${c.category}    Points: ${c.points}    Difficulty: ${c.difficulty}`,
-      "",
-      "Description:",
-      c.description,
-      "",
-      "Files:",
-      ...(c.files?.length ? c.files.map((f: string) => ` - ${f}`) : [" (none)"]),
-      "",
-      "Submit format: <challenge-id> editaCTF{...}",
-    ]
-    return lines.join("\n")
-  }, [])
-
-  const doHint = useCallback(async (id?: string) => {
-    if (!id) return "hint: missing challenge id"
-    const res = await fetch(`/api/challenges?hint=${encodeURIComponent(id)}`)
-    if (res.status === 404) return `hint: '${id}' not found`
-    const data = await res.json()
-    const hint = data.hint as string
-    return `Hint for ${id}: ${hint}`
-  }, [])
+    setChallengeBundleCache((s) => ({ ...s, [challengeId]: { challenge: data.challenge, hint: data.hint ?? null } }))
+    return { challenge: data.challenge, hint: data.hint ?? null }
+  }, [challengeBundleCache])
 
   const doSubmit = useCallback(
     async (id?: string, flag?: string) => {
@@ -524,7 +539,7 @@ export default function Page() {
           "2. auth login <your-email> <password>",
           "3. profile name <your-display-name>",
           "4. team create <team-name> <team-password>",
-          "5. <challenge-id> editaCTF{your_flag}",
+          "5. challenge <challenge-id> --submit editaCTF{your_flag}",
         ].join("\n")
       }
 
@@ -562,55 +577,41 @@ export default function Page() {
     [session, fetchSummary, summary?.displayName],
   )
 
-  // Auto-detect flag submission
-  const detectFlagSubmission = useCallback(
-    async (input: string) => {
-      // Check if input is just a flag (editaCTF{...})
-      const flagOnlyMatch = input.match(/^editaCTF\{[^}]*\}$/)
-      if (flagOnlyMatch) {
-        const flag = flagOnlyMatch[0]
-
-        // Try to find a matching challenge by checking recent challenges or user context
-        // For now, let's ask the user to specify which challenge
-        return [
-          "🏁 Flag detected! Which challenge is this for?",
-          "",
-          "Options:",
-          "1. Type: <challenge-id> " + flag,
-          "2. Or use: challenge <id> to see challenge details first",
-          "",
-          "Recent challenges:",
-          ...challenges.slice(0, 5).map((c) => `  ${c.id} - ${c.name} (${c.points} pts)`),
-          "",
-          "Use 'challenges' to see all available challenges.",
-        ].join("\n")
-      }
-
-      // Check if input has challenge ID + flag
-      const flagWithIdMatch = input.match(/^(\w[\w-]*)\s+(editaCTF\{[^}]*\})$/)
-      if (flagWithIdMatch) {
-        const [, challengeId, flag] = flagWithIdMatch
-
-        // Verify the challenge exists
-        const challenge = challenges.find((c) => c.id === challengeId)
-        if (!challenge) {
-          return [
-            `❌ Challenge '${challengeId}' not found.`,
-            "",
-            "Available challenges:",
-            ...challenges.slice(0, 8).map((c) => `  ${c.id} - ${c.name}`),
-            "",
-            "Use 'challenges' to see all challenges.",
-          ].join("\n")
-        }
-
-        return await doSubmit(challengeId, flag)
-      }
-
-      return null
-    },
-    [doSubmit, challenges],
-  )
+  const doChallenge = useCallback(async (id?: string, opts?: { hint?: boolean; submit?: string }) => {
+    if (!id) return "challenge: missing challenge id"
+    
+    const bundle = await fetchChallengeBundle(id)
+    if (!bundle || !bundle.challenge) return `challenge: '${id}' not found`
+    
+    // Handle hint flag
+    if (opts?.hint) {
+      if (bundle.hint) return `Hint for ${id}: ${bundle.hint}`
+      return `No hint available for ${id}`
+    }
+    
+    // Handle submit flag
+    if (opts?.submit) {
+      return await doSubmit(id, opts.submit)
+    }
+    
+    // Default: show challenge details
+    const c = bundle.challenge
+    const lines = [
+      `ID: ${c.id}`,
+      `Name: ${c.name}`,
+      `Category: ${c.category}    Points: ${c.points}    Difficulty: ${c.difficulty}`,
+      "",
+      "Description:",
+      c.description,
+      "",
+      "Files:",
+      ...(c.files?.length ? c.files.map((f: string) => ` - ${f}`) : [" (none)"]),
+      "",
+      "Submit: challenge " + id + " --submit editaCTF{flag}",
+      "   or:  challenge " + id + " -s editaCTF{flag}",
+    ]
+    return lines.join("\n")
+  }, [fetchChallengeBundle, doSubmit])
 
   // Team management
   const doTeam = useCallback(
@@ -781,16 +782,25 @@ export default function Page() {
   )
 
   const doExport = useCallback(() => {
-    const payload = session
-      ? {
-          team: summary?.team ?? null,
-          teamScore: summary?.teamScore ?? 0,
-          user: session.user_email,
-          displayName: summary?.displayName ?? null,
-          teamSolved: summary?.teamSolvedIds ?? [],
-        }
-      : { team: "guest", score: localScore, solved: localSolved, user: null }
-    return JSON.stringify(payload, null, 2)
+    if (session) {
+      const headers = ["Field", "Value"]
+      const rows = [
+        ["User", session.user_email],
+        ["Display Name", summary?.displayName ?? "(none)"],
+        ["Team", summary?.team ?? "guest"],
+        ["Team Score", String(summary?.teamScore ?? 0)],
+        ["Team Solves", String(summary?.teamSolvedIds?.length ?? 0)],
+      ]
+      return createTable(headers, rows)
+    } else {
+      const headers = ["Field", "Value"]
+      const rows = [
+        ["User", "guest"],
+        ["Score", String(localScore)],
+        ["Solves", String(localSolved.length)],
+      ]
+      return createTable(headers, rows)
+    }
   }, [session, summary, localScore, localSolved])
 
   // Autocomplete helpers
@@ -809,11 +819,45 @@ export default function Page() {
   const getPathCandidates = useCallback(
     (prefix: string) => {
       if (!fsRoot) return []
-      const cur = findNode(fsRoot, joinPath(cwd))
-      const names = listChildren(cur)
-      return names.filter((n) => n.startsWith(prefix))
+      
+      // Determine the base directory and the partial name to match
+      let basePath: string
+      let partialName: string
+      
+      if (prefix.startsWith('/')) {
+        // Absolute path
+        const lastSlash = prefix.lastIndexOf('/')
+        basePath = lastSlash === 0 ? '/' : prefix.substring(0, lastSlash)
+        partialName = prefix.substring(lastSlash + 1)
+      } else if (prefix.includes('/')) {
+        // Relative path with subdirectories
+        const lastSlash = prefix.lastIndexOf('/')
+        const relativePath = prefix.substring(0, lastSlash)
+        partialName = prefix.substring(lastSlash + 1)
+        
+        // Resolve relative path from current directory
+        basePath = resolvePath(relativePath)
+      } else {
+        // Simple name in current directory
+        basePath = joinPath(cwd)
+        partialName = prefix
+      }
+      
+      const baseNode = findNode(fsRoot, basePath)
+      if (!baseNode) return []
+      
+      const names = listChildren(baseNode)
+      const matches = names.filter((n) => n.startsWith(partialName))
+      
+      // For relative/absolute paths, prepend the directory path
+      if (prefix.includes('/')) {
+        const dirPrefix = prefix.substring(0, prefix.lastIndexOf('/') + 1)
+        return matches.map((n) => dirPrefix + n)
+      }
+      
+      return matches
     },
-    [cwd, fsRoot],
+    [cwd, fsRoot, resolvePath],
   )
   const getChallengeCandidates = useCallback(
     (prefix: string) => {
@@ -861,8 +905,10 @@ export default function Page() {
 
     if (["ls", "cd", "cat", "open"].includes(cmd)) {
       cands = getPathCandidates(currentArg)
-    } else if (["challenge", "hint"].includes(cmd)) {
+    } else if (cmd === "challenge") {
       cands = getChallengeCandidates(currentArg)
+    } else if (cmd === "help") {
+      cands = getCommandCandidates(currentArg)
     } else if (cmd === "team") {
       const sub = endsWithSpace ? "" : currentArg
       const subs = ["create", "join", "leave", "show"]
@@ -887,6 +933,7 @@ export default function Page() {
     async (raw: string) => {
       const line = raw.trim()
       if (!line) return
+      setPending(true)
       const parts = line.split(" ").filter(Boolean)
       const cmd = parts[0]
       const args = parts.slice(1)
@@ -900,117 +947,39 @@ export default function Page() {
 
       let out = ""
       try {
-        // First check if it's a flag submission
-        const flagResult = await detectFlagSubmission(line)
-        if (flagResult) {
-          out = flagResult
-        } else {
-          switch (cmd) {
-            case "help":
-              if (args[0]) {
-                // Detailed help for specific commands
-                const cmd = args[0]
-                const helpDetails: Record<string, string> = {
-                  ls: "ls [path] - List directory contents. Use ls -la for detailed view.",
-                  cd: "cd [path] - Change directory. Use cd ~ or cd to go to root.",
-                  cat: "cat <file> - Display file contents. Works with .txt, .md, .json files.",
-                  team: "team create <name> <pass> | team join <name> <pass> | team leave",
-                  auth: "auth register <email> <pass> | auth login <email> <pass> | auth logout",
-                  profile:
-                    "profile show | profile name <display_name> - Set display name (required for flag submission)",
-                  challenges:
-                    "challenges [filter] [--compact] [--all] [--help] - List challenges as JSON. Filter by category/name/id. Use 'challenges --help' for examples.",
-                }
-                out = helpDetails[cmd] || `No detailed help available for '${cmd}'. Try 'help' for all commands.`
-              } else {
-                out = [
-                  "EditaCTF Terminal Commands:",
-                  "",
-                  "Navigation:  ls, cd, pwd, cat, open",
-                  "CTF:         challenges (see 'challenges --help'), challenge <id>, hint <id>",
-                  "Flags:       <challenge-id> editaCTF{flag} OR just editaCTF{flag}",
-                  "Info:        rules, leaderboard, teams",
-                  "Account:     auth register/login/logout, profile name/show",
-                  "Team:        team create/join/leave/show",
-                  "System:      clear, reload, export state, date, whoami",
-                  "",
-                  "Use 'help <command>' for detailed info. Tab for autocomplete.",
-                  "Flag format: <challenge-id> editaCTF{...} or just editaCTF{...}",
-                  "",
-                  session
-                    ? summary?.displayName
-                      ? isOnRealTeam
-                        ? "✅ Ready to compete on leaderboard!"
-                        : "⚠️  Create/join a team to appear on leaderboard"
-                      : "⚠️  Set display name: profile name <your_name>"
-                    : "⚠️  Login required: auth register/login",
-                ].join("\n")
-              }
-              break
-            case "clear":
-              setHistory([])
-              return
-            case "ls":
-              out = doLs(args[0])
-              break
-            case "cd":
-              out = doCd(args[0])
-              break
-            case "pwd":
-              out = doPwd()
-              break
-            case "cat":
-              out = await doCat(args[0])
-              break
-            case "open":
-              out = await doOpen(args[0])
-              break
-            case "rules":
-              out = await doRules()
-              break
-            case "leaderboard":
-              out = await doLeaderboard(args[0])
-              break
-            case "teams":
-              out = await doTeams(args[0])
-              break
-            case "challenges":
-              out = doChallenges(args.join(" "))
-              break
-            case "challenge":
-              out = await doChallenge(args[0])
-              break
-            case "hint":
-              out = await doHint(args[0])
-              break
-            case "team":
-              out = await doTeam(args[0], args[1], args[2])
-              break
-            case "profile":
-              out = await doProfile(args[0], ...args.slice(1))
-              break
-            case "auth":
-              out = await doAuth(args[0] ?? "", args[1], args[2])
-              break
-            case "export":
-              if (args[0] === "state") out = doExport()
-              else out = "export: unknown target. Use 'export state'."
-              break
-            case "reload":
+        const cliContext: CliContext = {
+          doDate,
+          doLs,
+          doChallenge,
+            doChallenges: (opts) => {
+              const tokens: string[] = []
+              if (opts.filter) tokens.push(opts.filter)
+              if (opts.all) tokens.push("--all")
+              if (opts.json) tokens.push("--json")
+              if (opts.help) tokens.push("--help")
+              const arg = tokens.join(" ")
+              return doChallenges(tokens.length > 0 ? arg : undefined)
+            },
+            doClear,
+            doCd,
+            doCat,
+            doExport,
+            doPwd,
+            doWhoami: () => displayIdentity,
+            doOpen,
+            doRules,
+            doLeaderboard,
+            doTeams,
+            doReload: async () => {
               await reloadData()
               await fetchSummary()
-              out = "Reloaded CTF data."
-              break
-            case "date":
-              out = new Date().toString()
-              break
-            case "whoami":
-              out = displayIdentity
-              break
-            default:
-              out = `${cmd}: command not found`
+              return "Reloaded CTF data."
+            },
+            doTeam,
+            doProfile,
+            doAuth,
           }
-        }
+          out = await runCli(line, cliContext)
       } catch {
         out = "Error executing command."
       }
@@ -1018,10 +987,10 @@ export default function Page() {
       if (out) {
         setHistory((h) => [...h, { type: "output", text: out }])
       }
+      setPending(false)
     },
     [
       prompt,
-      detectFlagSubmission,
       doLs,
       doCd,
       doPwd,
@@ -1032,7 +1001,8 @@ export default function Page() {
       doTeams,
       doChallenges,
       doChallenge,
-      doHint,
+      doClear,
+      doDate,
       doTeam,
       doProfile,
       doAuth,
@@ -1079,6 +1049,7 @@ export default function Page() {
     }
   }
 
+  if (!clientReady) return null
   return (
     <main className="min-h-[100dvh] bg-black text-emerald-200">
       <div className="mx-auto max-w-5xl px-4 py-6 md:py-8">
@@ -1110,29 +1081,38 @@ export default function Page() {
           >
             {history.map((line, i) => {
               const isHtml = /<span|&nbsp;/.test(line.text)
+              const isTable = /[┌┐└┘├┤┬┴┼─│]/.test(line.text)
               return (
                 <div key={i} className={line.type === "input" ? "text-emerald-300" : "text-emerald-200"}>
                   {isHtml ? (
                     <div dangerouslySetInnerHTML={{ __html: line.text }} />
+                  ) : isTable ? (
+                    <pre className="font-mono whitespace-pre">{line.text}</pre>
                   ) : (
                     line.text.split("\n").map((t, idx) => <div key={idx}>{t || "\u00A0"}</div>)
                   )}
                 </div>
               )
             })}
-            <div className="flex items-center gap-2">
-              <span className="text-emerald-400">{prompt}</span>
-              <input
-                ref={inputRef}
-                aria-label="Terminal input"
-                className="flex-1 bg-transparent outline-none border-none text-emerald-100 placeholder:text-emerald-700 caret-emerald-400"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="type a command or paste editaCTF{flag}"
-                autoFocus
-              />
-            </div>
+            {!pending ? (
+              <div className="flex items-center gap-2">
+                <span className="text-emerald-400">{prompt}</span>
+                <input
+                  ref={inputRef}
+                  aria-label="Terminal input"
+                  className="flex-1 bg-transparent outline-none border-none text-emerald-100 placeholder:text-emerald-700 caret-emerald-400"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="type a command or paste editaCTF{flag}"
+                  autoFocus
+                />
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-emerald-600 animate-pulse">...</span>
+              </div>
+            )}
             <div ref={termEndRef} />
           </section>
           <footer className="border-t border-emerald-800 px-3 py-2 text-[11px] text-emerald-600">
