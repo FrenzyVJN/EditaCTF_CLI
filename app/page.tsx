@@ -15,7 +15,7 @@ const DEFAULT_HOST = "EditaCTF"
 // Helper function to create tabulated output
 function createTable(headers: string[], rows: string[][]): string {
   const data = [headers, ...rows]
-  
+
   return table(data, {
     columns: headers.map(() => ({ alignment: 'left' }))
   })
@@ -465,7 +465,7 @@ export default function Page() {
   const doChallenges = useCallback(
     (arg?: string) => {
       if (!challenges || challenges.length === 0) return "No challenges available."
-      
+
       let filter: string | undefined = undefined
       let outputJson = false
       if (arg && arg.trim().length > 0) {
@@ -476,7 +476,7 @@ export default function Page() {
         if (flagSet.has("--all")) filter = undefined
         if (flagSet.has("--json")) outputJson = true
       }
-      
+
       let list = challenges
       if (filter) {
         const f = filter.toLowerCase()
@@ -485,7 +485,7 @@ export default function Page() {
             c.category.toLowerCase().includes(f) || c.id.toLowerCase().includes(f) || c.name.toLowerCase().includes(f),
         )
       }
-      
+
       if (list.length === 0) {
         return `No challenges found matching '${filter}'.`
       }
@@ -494,7 +494,7 @@ export default function Page() {
       if (outputJson) {
         return JSON.stringify({ challenges: list, total: list.length })
       }
-      
+
       const headers = ["ID", "Name", "Category", "Points", "Difficulty", "Daily"]
       const rows = list.map((c) => [
         c.id,
@@ -504,12 +504,12 @@ export default function Page() {
         c.difficulty,
         c.daily ? "yes" : "no"
       ])
-      
+
       const output = createTable(headers, rows)
-      const summary = filter 
+      const summary = filter
         ? `\nShowing ${list.length} challenge(s) matching '${filter}'`
         : `\nTotal: ${list.length} challenge(s)`
-      
+
       return output + summary
     },
     [challenges],
@@ -579,21 +579,21 @@ export default function Page() {
 
   const doChallenge = useCallback(async (id?: string, opts?: { hint?: boolean; submit?: string }) => {
     if (!id) return "challenge: missing challenge id"
-    
+
     const bundle = await fetchChallengeBundle(id)
     if (!bundle || !bundle.challenge) return `challenge: '${id}' not found`
-    
+
     // Handle hint flag
     if (opts?.hint) {
       if (bundle.hint) return `Hint for ${id}: ${bundle.hint}`
       return `No hint available for ${id}`
     }
-    
+
     // Handle submit flag
     if (opts?.submit) {
       return await doSubmit(id, opts.submit)
     }
-    
+
     // Default: show challenge details
     const c = bundle.challenge
     const lines = [
@@ -819,11 +819,11 @@ export default function Page() {
   const getPathCandidates = useCallback(
     (prefix: string) => {
       if (!fsRoot) return []
-      
+
       // Determine the base directory and the partial name to match
       let basePath: string
       let partialName: string
-      
+
       if (prefix.startsWith('/')) {
         // Absolute path
         const lastSlash = prefix.lastIndexOf('/')
@@ -834,7 +834,7 @@ export default function Page() {
         const lastSlash = prefix.lastIndexOf('/')
         const relativePath = prefix.substring(0, lastSlash)
         partialName = prefix.substring(lastSlash + 1)
-        
+
         // Resolve relative path from current directory
         basePath = resolvePath(relativePath)
       } else {
@@ -842,19 +842,19 @@ export default function Page() {
         basePath = joinPath(cwd)
         partialName = prefix
       }
-      
+
       const baseNode = findNode(fsRoot, basePath)
       if (!baseNode) return []
-      
+
       const names = listChildren(baseNode)
       const matches = names.filter((n) => n.startsWith(partialName))
-      
+
       // For relative/absolute paths, prepend the directory path
       if (prefix.includes('/')) {
         const dirPrefix = prefix.substring(0, prefix.lastIndexOf('/') + 1)
         return matches.map((n) => dirPrefix + n)
       }
-      
+
       return matches
     },
     [cwd, fsRoot, resolvePath],
@@ -1119,7 +1119,7 @@ export default function Page() {
             {session
               ? summary?.displayName
                 ? isOnRealTeam
-                  ? "Ready to compete! Just paste editaCTF{flag} or use <challenge-id> editaCTF{flag}"
+                  ? "Ready to compete! Just use challenge <challenge-id> -s editaCTF{flag} to submit"
                   : "Individual mode. Create/join a team to appear on leaderboard: team create <name> <password>"
                 : "Set your display name with 'profile name <your_name>' to submit flags."
               : "Register with 'auth register <email> <password>' to start competing."}

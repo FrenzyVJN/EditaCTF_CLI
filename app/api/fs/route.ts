@@ -152,7 +152,7 @@ export async function GET(_req: NextRequest) {
           ``,
           `Use 'challenge ${challenge.id}' to view full details and files.`,
           `Use 'hint ${challenge.id}' to reveal a hint.`,
-          `Submit with: submit ${challenge.id} editaCTF{your_flag_here}`,
+          `Submit with: ${challenge.id} -s editaCTF{your_flag_here}`,
         ].join("\n")
         return NextResponse.json({ ...node, content })
       }
