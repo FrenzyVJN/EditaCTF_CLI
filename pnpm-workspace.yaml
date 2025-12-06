@@ -2,3 +2,6 @@ onlyBuiltDependencies:
   - '@tailwindcss/oxide'
   - sharp
   - supabase
+
+overrides:
+  next@>=16.0.0-canary.0 <16.0.7: '>=16.0.7'
