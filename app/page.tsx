@@ -2,7 +2,8 @@
 
 import type React from "react"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react"
+import { useSearchParams } from "next/navigation"
 import { getSupabaseClient } from "@/lib/supabase/client"
 import { runCli, type CliContext, COMMANDS } from "@/lib/cli"
 import { table } from "table"
@@ -68,7 +69,8 @@ function useLocalStorage<T>(key: string, initial: T) {
   return [state, setState] as const
 }
 
-export default function Page() {
+function CTFTerminal() {
+  const searchParams = useSearchParams()
   const supabase = useMemo(() => {
     try {
       return getSupabaseClient()
@@ -613,6 +615,37 @@ export default function Page() {
     return lines.join("\n")
   }, [fetchChallengeBundle, doSubmit])
 
+  const [initialNavDone, setInitialNavDone] = useState(false)
+
+  useEffect(() => {
+    if (initialNavDone || !challenges.length || !fsRoot) return
+
+    const pathParam = searchParams.get("path")
+    const challengeParam = searchParams.get("challenge") || searchParams.get("id")
+
+    if (challengeParam) {
+      const challenge = challenges.find((c) => c.id === challengeParam)
+      if (challenge) {
+        const newPath = `/challenges/${challenge.category}/${challenge.id}`
+        setCwd(splitPath(newPath))
+        doChallenge(challenge.id).then((output) => {
+          setHistory((h) => [
+            ...h,
+            { type: "input", text: `challenge ${challenge.id}` },
+            { type: "output", text: output },
+          ])
+        })
+        setInitialNavDone(true)
+        return
+      }
+    }
+
+    if (pathParam) {
+      setCwd(splitPath(pathParam))
+      setInitialNavDone(true)
+    }
+  }, [challenges, fsRoot, searchParams, initialNavDone, doChallenge, setCwd])
+
   // Team management
   const doTeam = useCallback(
     async (action?: string, a?: string, b?: string) => {
@@ -951,35 +984,35 @@ export default function Page() {
           doDate,
           doLs,
           doChallenge,
-            doChallenges: (opts) => {
-              const tokens: string[] = []
-              if (opts.filter) tokens.push(opts.filter)
-              if (opts.all) tokens.push("--all")
-              if (opts.json) tokens.push("--json")
-              if (opts.help) tokens.push("--help")
-              const arg = tokens.join(" ")
-              return doChallenges(tokens.length > 0 ? arg : undefined)
-            },
-            doClear,
-            doCd,
-            doCat,
-            doExport,
-            doPwd,
-            doWhoami: () => displayIdentity,
-            doOpen,
-            doRules,
-            doLeaderboard,
-            doTeams,
-            doReload: async () => {
-              await reloadData()
-              await fetchSummary()
-              return "Reloaded CTF data."
-            },
-            doTeam,
-            doProfile,
-            doAuth,
-          }
-          out = await runCli(line, cliContext)
+          doChallenges: (opts) => {
+            const tokens: string[] = []
+            if (opts.filter) tokens.push(opts.filter)
+            if (opts.all) tokens.push("--all")
+            if (opts.json) tokens.push("--json")
+            if (opts.help) tokens.push("--help")
+            const arg = tokens.join(" ")
+            return doChallenges(tokens.length > 0 ? arg : undefined)
+          },
+          doClear,
+          doCd,
+          doCat,
+          doExport,
+          doPwd,
+          doWhoami: () => displayIdentity,
+          doOpen,
+          doRules,
+          doLeaderboard,
+          doTeams,
+          doReload: async () => {
+            await reloadData()
+            await fetchSummary()
+            return "Reloaded CTF data."
+          },
+          doTeam,
+          doProfile,
+          doAuth,
+        }
+        out = await runCli(line, cliContext)
       } catch {
         out = "Error executing command."
       }
@@ -1127,5 +1160,13 @@ export default function Page() {
         </div>
       </div>
     </main>
+  )
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-neutral-950 text-emerald-500 p-4 font-mono">Loading terminal...</div>}>
+      <CTFTerminal />
+    </Suspense>
   )
 }
