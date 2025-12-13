@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  next@>=16.0.0-beta.0 <16.0.9: '>=16.0.9'
   next@>=16.0.0-canary.0 <16.0.7: '>=16.0.7'
 
 importers:
