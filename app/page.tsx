@@ -112,6 +112,7 @@ function CTFTerminal() {
     teamScore: number
     teamSolvedIds: string[]
     userSolvedIds: string[]
+    teamMembers: string[]
     displayName: string | null
   } | null>(null)
 
@@ -147,6 +148,7 @@ function CTFTerminal() {
         teamScore: Number(data.teamScore ?? 0),
         teamSolvedIds: (data.teamSolvedIds ?? []).map((s: any) => String(s)),
         userSolvedIds: (data.userSolvedIds ?? []).map((s: any) => String(s)),
+        teamMembers: (data.teamMembers ?? []).map((s: any) => String(s)),
         displayName: data.display_name ?? null,
       })
     } catch {
@@ -723,7 +725,13 @@ function CTFTerminal() {
       if (action === "show") {
         const teamDisplay = currentTeam.startsWith("guest_") ? "individual" : currentTeam
         const status = isOnRealTeam ? "On leaderboard" : "Individual (not on leaderboard)"
-        return `Team: ${teamDisplay} (${status})`
+        const lines = [`Team: ${teamDisplay} (${status})`]
+
+        if (summary?.teamMembers && summary.teamMembers.length > 0) {
+          lines.push(`Members: ${summary.teamMembers.join(", ")}`)
+        }
+
+        return lines.join("\n")
       }
       if (action === "set") {
         return "team set is disabled. Use 'team create <name> <password>' or 'team join <name> <password>'."

@@ -66,9 +66,25 @@ export async function GET(req: NextRequest) {
 
     const teamSolvedIds = Array.from(new Set((teamSolves ?? []).map((r: any) => String(r.challenge_id))))
 
+    // Fetch team members if in a team
+    let teamMembers: string[] = []
+    if (team !== "guest") {
+      const { data: members, error: membersError } = await supabase
+        .from("profiles")
+        .select("display_name")
+        .eq("team_name", team)
+
+      if (membersError) {
+        console.error("Team members fetch error:", membersError)
+      } else {
+        teamMembers = members.map((m: any) => m.display_name).filter(Boolean)
+      }
+    }
+
     return NextResponse.json({
       team,
       display_name: profile?.display_name ?? null,
+      teamMembers,
       teamScore,
       teamSolvedCount: teamSolvesCount,
       userSolvedIds,
