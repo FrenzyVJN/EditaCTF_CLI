@@ -13,9 +13,9 @@ export async function POST(req: NextRequest) {
     if (!id || !flag) {
       return new NextResponse("Missing id or flag", { status: 400 })
     }
-    if (!/^editaCTF\{.*\}$/.test(flag)) {
-      return NextResponse.json({ correct: false, message: "Invalid flag format. Expected editaCTF{...}" })
-    }
+    // if (!/^editaCTF\{.*\}$/.test(flag)) {
+    //   return NextResponse.json({ correct: false, message: "Invalid flag format. Expected editaCTF{...}" })
+    // }
 
     // Require authentication for flag submissions
     const authHeader = req.headers.get("authorization") || ""
